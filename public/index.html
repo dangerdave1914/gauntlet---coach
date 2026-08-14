@@ -77,6 +77,13 @@ section{flex:none;width:100%;scroll-snap-align:start;overflow-y:auto;padding:14p
   grid-column:1/-1;flex-basis:100%;margin-top:6px;padding:8px 11px;border-left:2px solid var(--blue);
   background:rgba(61,139,255,.1);font-size:14px;color:var(--white);border-radius:0 6px 6px 0;
 }
+.gloss.linked{cursor:pointer;border-left-color:var(--blue);background:rgba(61,139,255,.16)}
+.gloss.linked:active{background:rgba(61,139,255,.26)}
+.gloss .watch{
+  display:inline-flex;align-items:center;gap:4px;margin-left:8px;color:var(--blue);
+  font:600 12px/1 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.07em;
+  white-space:nowrap;
+}
 .empty{color:var(--chalk);font-size:14px;font-style:italic}
 
 /* ---- workout ---- */
@@ -280,6 +287,48 @@ const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Satur
 const state = { day: DAYS[new Date().getDay()], tier: 'BLUE', data: null };
 const $ = s => document.querySelector(s);
 
+/**
+ * Notation code -> reference clip, pulled from the Notation Key tab's
+ * hyperlinked "meaning" cells. Keyed by the code itself (normalized), not
+ * the meaning text, since that's what a token's rendered label matches.
+ * Same clip on both sides of a pair unless the sheet links them separately
+ * (Cross, Side Kick, and the Spinning Back moves each go their own way).
+ */
+const VIDEO = {
+  'LJ':'https://youtu.be/71nmi6nGcrY','RJ':'https://youtu.be/71nmi6nGcrY',
+  'LC':'https://youtu.be/hzxPtUkEbdw','RC':'https://youtu.be/sK-6Ujp3KYY',
+  'LH':'https://youtu.be/i3G3HsI1GGU','RH':'https://youtu.be/i3G3HsI1GGU',
+  'LU':'https://youtu.be/vXVG82CN_Jo','RU':'https://youtu.be/eBxn21FtqPg',
+  'L/SLIP':'https://youtu.be/-cfSa-gBxtc','R/SLIP':'https://youtu.be/-cfSa-gBxtc',
+  'DUCK':'https://youtu.be/u3PiuZZmZzA','PULL':'https://youtu.be/7Pli4dauWSE',
+  'PIVOT':'https://youtu.be/hNclexRmDsY','TRAP':'https://youtu.be/perx1VSnLA8',
+  'POST':'https://youtu.be/Ycs6-P17d28','ROLL RIGHT':'https://youtu.be/mLKrcE0mo4E',
+  'ROLL LEFT':'https://youtu.be/mLKrcE0mo4E','CLINCH':'https://youtube.com/shorts/4Vxqg1E0tAM',
+  'L/BLOCK':'https://youtu.be/_wlSoYWIrbI','R/BLOCK':'https://youtu.be/_wlSoYWIrbI',
+  'CHECK L':'https://youtu.be/onf6qfSOxB8','CHECK R':'https://youtu.be/onf6qfSOxB8',
+  'SKIP KNEES':'https://youtu.be/GRfxz5NZSI0',
+  'L/FRONTKICK':'https://youtu.be/_oZ9_3FFnZs','R/FRONTKICK':'https://youtu.be/_oZ9_3FFnZs',
+  'L/SIDEKICK':'https://youtu.be/98boTtEjgfw','R/SIDEKICK':'https://youtu.be/OkLSVs0jNu8',
+  'L/ROUNDKICK':'https://youtu.be/-iKFiHNpOGw','R/ROUNDKICK':'https://youtu.be/BBSV6f2JNEA',
+  'L/SWITCH KNEE':'https://youtu.be/_bAdNHstI0g','R/SWITCH KNEE':'https://youtu.be/_bAdNHstI0g',
+  'L/KNEE':'https://youtu.be/2vpU5jkpGQs','R/KNEE':'https://youtu.be/2vpU5jkpGQs',
+  'L/SLASH':'https://youtu.be/7yKXDJX5778','R/SLASH':'https://youtu.be/7yKXDJX5778',
+  'L/UP ELBOW':'https://youtube.com/shorts/Iw20vy4x2qY','R/UP ELBOW':'https://youtube.com/shorts/Iw20vy4x2qY',
+  'L/BODY JAB':'https://youtube.com/shorts/Wslu8Hn3ni4','R/BODY JAB':'https://youtube.com/shorts/Wslu8Hn3ni4',
+  'OVERHAND LC':'https://youtu.be/oFzdYw3fHbA','OVERHAND RC':'https://youtu.be/oFzdYw3fHbA',
+  'SHOVEL LH':'https://youtu.be/PKnACIj2ywQ','SHOVEL RH':'https://youtu.be/PKnACIj2ywQ',
+  'L/TOMAHAWK':'https://youtu.be/Dc79wGZhFo0','R/TOMAHAWK':'https://youtu.be/Dc79wGZhFo0',
+  'L/SPINNING BACK FIST':'https://youtu.be/7Vn2NycQDJw','R/SPINNING BACK FIST':'https://youtu.be/TUu4m_ouu9Y',
+  'L/SPINNING BACK ELBOW':'https://youtu.be/wjrxwXZzKaU','R/SPINNING BACK ELBOW':'https://youtu.be/2Z1wLM4wsXE',
+  'L/COLLAR TIE':'https://youtu.be/TrU9NVUGzFo','R/COLLAR TIE':'https://youtu.be/TrU9NVUGzFo',
+  'L/POST':'https://youtu.be/Ycs6-P17d28','R/POST':'https://youtu.be/Ycs6-P17d28',
+};
+/** Codes appear with inconsistent spacing in the sheet ("SHOVEL  RH" with a
+ *  double space, "BLOCK L" vs "L/BLOCK"). Collapse whitespace and uppercase
+ *  before lookup so those don't silently miss. */
+function normCode(s) { return String(s || '').trim().toUpperCase().replace(/\s+/g, ' '); }
+function videoFor(code) { return VIDEO[normCode(code)] || ''; }
+
 /* Day chips: Mon–Sat only. Sunday falls back to Saturday's kickboxing. */
 const chips = DAYS.slice(1);
 $('#days').innerHTML = chips.map(d =>
@@ -351,17 +400,28 @@ function renderTowers() {
   }).join('');
 }
 
-/* Tapping a code drops its meaning inline — no leaving for the Notation Key. */
+/* Tapping a code drops its meaning inline — no leaving for the Notation Key.
+ * If that code has a reference clip, the gloss itself becomes the link:
+ * it's visually marked (brighter fill, a "Watch" tag) and a second tap
+ * opens the clip in a new tab. No separate play button needed. */
 $('#towers').addEventListener('click', e => {
+  const linked = e.target.closest('.gloss.linked');
+  if (linked) { window.open(linked.dataset.video, '_blank', 'noopener'); return; }
+
   const b = e.target.closest('.tok.known'); if (!b) return;
   const combo = b.closest('.combo');
   const open = combo.querySelector('.gloss');
   const same = open && open.dataset.for === b.textContent;
   if (open) open.remove();
   if (same) return;
+
+  const video = videoFor(b.textContent);
   const g = document.createElement('div');
-  g.className = 'gloss'; g.dataset.for = b.textContent;
-  g.textContent = `${b.textContent} — ${b.dataset.gloss}`;
+  g.className = 'gloss' + (video ? ' linked' : '');
+  g.dataset.for = b.textContent;
+  if (video) g.dataset.video = video;
+  g.innerHTML = `${esc(b.textContent)} — ${esc(b.dataset.gloss)}` +
+    (video ? '<span class="watch">▶ Watch</span>' : '');
   combo.appendChild(g);
 });
 
