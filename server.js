@@ -130,17 +130,55 @@ async function loadStaff() {
 }
 
 /**
+ * The gym's standing week, built in. The app shows the real schedule from the
+ * first load; a `Schedule` tab in Master Control overrides this once one
+ * exists, so nothing has to be set up before anyone can use it.
+ */
+const DEFAULT_SCHEDULE = [
+  { day: 'Monday', time: '5:15 AM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Monday', time: '6:00 AM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Monday', time: '7:00 AM', klass: 'Express 35', coach: 'David Clark', assisting: '' },
+  { day: 'Monday', time: '9:00 AM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Monday', time: '4:30 PM', klass: 'The Gauntlet 45', coach: 'Kendal Harris', assisting: '' },
+  { day: 'Monday', time: '5:30 PM', klass: 'The Gauntlet 45', coach: 'Kendal Harris', assisting: '' },
+  { day: 'Tuesday', time: '5:15 AM', klass: 'The Gauntlet 45', coach: 'Paul Shunnarah', assisting: '' },
+  { day: 'Tuesday', time: '6:00 AM', klass: 'Strength 45', coach: 'Paul Shunnarah', assisting: '' },
+  { day: 'Tuesday', time: '12:00 PM', klass: 'Express 35', coach: 'David Clark', assisting: '' },
+  { day: 'Tuesday', time: '4:30 PM', klass: 'The Gauntlet 45', coach: 'Kendall Lindsey', assisting: '' },
+  { day: 'Tuesday', time: '5:30 PM', klass: 'Strength 45', coach: 'Kendall Lindsey', assisting: '' },
+  { day: 'Wednesday', time: '5:15 AM', klass: 'The Gauntlet 45', coach: 'Paul Shunnarah', assisting: '' },
+  { day: 'Wednesday', time: '6:00 AM', klass: 'The Gauntlet 45', coach: 'Paul Shunnarah', assisting: '' },
+  { day: 'Wednesday', time: '7:00 AM', klass: 'Express 35', coach: 'Paul Shunnarah', assisting: '' },
+  { day: 'Wednesday', time: '9:00 AM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Wednesday', time: '4:30 PM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Wednesday', time: '5:30 PM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Thursday', time: '6:00 AM', klass: 'Strength 45', coach: 'Kendal Harris', assisting: '' },
+  { day: 'Thursday', time: '12:00 PM', klass: 'Express 35', coach: 'David Clark', assisting: '' },
+  { day: 'Thursday', time: '4:30 PM', klass: 'The Gauntlet 45', coach: 'Kendall Waldrop', assisting: '' },
+  { day: 'Thursday', time: '5:30 PM', klass: 'The Gauntlet 45', coach: 'Kendall Waldrop', assisting: '' },
+  { day: 'Friday', time: '6:00 AM', klass: 'The Gauntlet 45', coach: 'Kendal Harris', assisting: '' },
+  { day: 'Friday', time: '7:00 AM', klass: 'Express 35', coach: 'Kendal Harris', assisting: '' },
+  { day: 'Friday', time: '9:00 AM', klass: 'The Gauntlet 45', coach: 'David Clark', assisting: '' },
+  { day: 'Friday', time: '12:00 PM', klass: 'Express 35', coach: 'David Clark', assisting: '' },
+  { day: 'Saturday', time: '9:00 AM', klass: 'Red Bull Slay & Soda', coach: 'April Mack', assisting: '' }
+];
+
+/**
  * The standing weekly grid. Class is optional — the paper schedule identifies
  * slots by time and coach alone, so requiring a class name would mean typing
  * "Muay Thai" into forty rows that never say it.
  */
 async function loadSchedule() {
-  return (await readTab(CURRICULUM, 'Schedule'))
+  const rows = (await readTab(CURRICULUM, 'Schedule'))
     .map((r, i) => ({
       row: i + 2, day: cell(r, 0), time: cell(r, 1),
       klass: cell(r, 2), coach: cell(r, 3), assisting: cell(r, 4),
     }))
     .filter(s => s.day && s.time);
+
+  // No tab yet: fall back to the built-in week. row === null marks these as
+  // not editable, since there's no sheet row behind them to write to.
+  return rows.length ? rows : DEFAULT_SCHEDULE.map(s => ({ ...s, row: null, builtin: true }));
 }
 
 
@@ -629,6 +667,33 @@ app.post('/api/staff', async (req, res) => {
     }
     await warm(true);
     res.json({ ok: true, me: (cache.staff || []).find(s => s.email === email) || null });
+  } catch (e) {
+    console.error(e); res.status(500).json({ error: e.message });
+  }
+});
+
+/** Seven days at once — how a scheduler actually thinks about the week. */
+app.get('/api/week', async (req, res) => {
+  try {
+    await warm();
+    const anchor = /^\d{4}-\d{2}-\d{2}$/.test(req.query.start || '')
+      ? new Date(req.query.start + 'T12:00:00') : new Date();
+    // Back up to Monday; the paper schedule runs Monday through Sunday.
+    const monday = new Date(anchor);
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      const date = new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+      days.push({
+        date, day: DAYS[d.getDay()], label: d.getDate(),
+        slots: scheduleFor(date),
+        events: (cache.events || []).filter(e => e.date === date && !/^closed$/i.test(e.kind)),
+      });
+    }
+    res.json({ start: days[0].date, end: days[6].date, days, staff: (cache.staff || []).map(s => s.name) });
   } catch (e) {
     console.error(e); res.status(500).json({ error: e.message });
   }
