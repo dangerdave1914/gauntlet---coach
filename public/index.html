@@ -171,6 +171,39 @@ input[type=text],input[type=date]{
   background:transparent;color:var(--chalk);font:600 12px 'Barlow Condensed',sans-serif;
   text-transform:uppercase;letter-spacing:.07em;cursor:pointer}
 
+.viewtog{display:flex;gap:6px;margin-bottom:12px}
+.viewtog button{flex:1;border:1px solid var(--line);background:transparent;color:var(--chalk);
+  border-radius:8px;padding:8px;font:600 13px 'Barlow Condensed',sans-serif;text-transform:uppercase;
+  letter-spacing:.09em;cursor:pointer}
+.viewtog button[aria-pressed="true"]{background:var(--white);border-color:var(--white);color:var(--ink)}
+.wk-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 calc(var(--pad) * -1);padding:0 var(--pad)}
+.wk-grid{display:grid;min-width:760px;border-top:1px solid var(--line)}
+.wk-head{
+  position:sticky;top:0;z-index:2;background:var(--ink);border-bottom:1px solid var(--line);
+  padding:8px 4px;text-align:center;font:600 12px/1.3 'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.07em;color:var(--chalk);
+}
+.wk-head.today{color:var(--blue)}
+.wk-head b{display:block;font-size:15px;color:inherit}
+.wk-time{
+  padding:8px 8px 8px 0;text-align:right;font-size:11px;color:var(--chalk);
+  border-top:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.wk-cell{border-top:1px solid var(--line);border-left:1px solid var(--line);padding:4px;min-height:44px}
+.wk-cell.today{background:rgba(61,139,255,.05)}
+.wk-card{
+  background:rgba(61,139,255,.16);border-left:3px solid var(--blue);border-radius:0 6px 6px 0;
+  padding:6px 7px;height:100%;
+}
+.wk-card .n{display:block;font-size:13px;font-weight:600;line-height:1.25}
+.wk-card .c{display:block;font-size:11px;color:var(--chalk);margin-top:1px}
+.wk-card.off{opacity:.45;background:rgba(255,255,255,.06);border-left-color:var(--chalk)}
+.wk-card.off .n{text-decoration:line-through}
+.wk-card.evt{background:rgba(242,180,65,.16);border-left-color:var(--warn)}
+.wk-card.ask{border-left-color:var(--warn)}
+.wk-card .tag{display:block;font-size:10px;color:var(--warn);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+.hint{color:var(--chalk);font-size:12px;margin-top:12px;text-align:center}
+
 /* ---- bottom bar ---- */
 footer{
   position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;
@@ -524,11 +557,13 @@ $('#btn-post').addEventListener('click', () => {
 
 /* ---------- schedule ---------- */
 
-const sched = { date: new Date(), slots: [], staff: [] };
+const sched = { date: new Date(), slots: [], staff: [], events: [], view: 'day', week: null };
 const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
 const pretty = d => d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
 async function loadSchedule() {
+  if (sched.view === 'week') return loadWeek();
+  $('#pane-schedule').classList.remove('week');
   $('#pane-schedule').innerHTML = '<p class="empty">Loading…</p>';
   try {
     const r = await fetch(`/api/schedule?date=${iso(sched.date)}`);
@@ -542,8 +577,101 @@ async function loadSchedule() {
   renderSchedule();
 }
 
+const viewToggle = () => `<div class="viewtog" id="viewtog">
+    <button data-view="day" aria-pressed="${sched.view === 'day'}">Day</button>
+    <button data-view="week" aria-pressed="${sched.view === 'week'}">Week</button>
+  </div>`;
+
+$('#pane-schedule').addEventListener('click', e => {
+  const b = e.target.closest('#viewtog button'); if (!b) return;
+  sched.view = b.dataset.view;
+  loadSchedule();
+});
+
+async function loadWeek() {
+  $('#pane-schedule').classList.add('week');
+  $('#pane-schedule').innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch(`/api/week?start=${iso(sched.date)}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    sched.week = d; sched.staff = d.staff || [];
+  } catch (e) {
+    $('#pane-schedule').innerHTML = viewToggle() + `<p class="empty">${esc(e.message)}</p>`;
+    return;
+  }
+  renderWeek();
+}
+
+function renderWeek() {
+  const w = sched.week;
+  const span = `${new Date(w.start + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${
+    new Date(w.end + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
+  const todayIso = iso(new Date());
+
+  // Rows are the start times that actually occur this week, not every half
+  // hour — same shape as the Mariana grid without the dead space between 7am
+  // and noon that makes you scroll past nothing on a phone.
+  const times = [...new Set(w.days.flatMap(d =>
+    [...d.slots.map(s => s.time), ...d.events.map(e => e.time).filter(Boolean)]))]
+    .sort((a, b) => minutes(a) - minutes(b));
+
+  const head = `<div class="wk-head"></div>` + w.days.map(d => {
+    const dt = new Date(d.date + 'T12:00:00');
+    return `<div class="wk-head ${d.date === todayIso ? 'today' : ''}">
+      ${dt.toLocaleDateString('en-US',{weekday:'short'})}<b>${dt.getMonth()+1}/${dt.getDate()}</b></div>`;
+  }).join('');
+
+  const body = times.map(t => {
+    const cells = w.days.map(d => {
+      const slot = d.slots.find(s => s.time === t);
+      const evt = d.events.find(e => e.time === t);
+      let card = '';
+      if (slot) card = `<div class="wk-card ${slot.cancelled ? 'off' : ''} ${slot.request ? 'ask' : ''}">
+          <span class="n">${esc(slot.coach || 'Unassigned')}</span>
+          ${slot.klass ? `<span class="c">${esc(slot.klass)}</span>` : ''}
+          ${slot.cancelled ? `<span class="tag">${esc(slot.cancelNote)}</span>` : ''}
+          ${slot.request ? '<span class="tag">needs cover</span>' : ''}
+        </div>`;
+      else if (evt) card = `<div class="wk-card evt">
+          <span class="n">${esc(evt.title)}</span>
+          ${evt.who ? `<span class="c">${esc(evt.who)}</span>` : ''}</div>`;
+      return `<div class="wk-cell ${d.date === todayIso ? 'today' : ''}">${card}</div>`;
+    }).join('');
+    return `<div class="wk-time">${esc(t)}</div>` + cells;
+  }).join('');
+
+  // Untimed events (all-day) get listed under the grid rather than guessed at.
+  const untimed = w.days.flatMap(d => d.events.filter(e => !e.time)
+    .map(e => `<div class="wk-row"><span class="t">${new Date(d.date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short'})}</span>
+      <span class="n">${esc(e.title)}${e.who ? ' · ' + esc(e.who) : ''}</span></div>`)).join('');
+
+  $('#pane-schedule').innerHTML = viewToggle() + `<div class="datenav">
+      <button id="prev" aria-label="Previous week">‹</button>
+      <div class="label">${esc(span)}</div>
+      <button id="next" aria-label="Next week">›</button>
+    </div>
+    <div class="wk-scroll"><div class="wk-grid" style="grid-template-columns:56px repeat(7,minmax(100px,1fr))">
+      ${head}${body}
+    </div></div>
+    ${untimed}
+    <p class="hint">Swipe the grid sideways · switch to Day to assign or swap</p>`;
+
+  $('#prev').onclick = () => { sched.date.setDate(sched.date.getDate() - 7); loadWeek(); };
+  $('#next').onclick = () => { sched.date.setDate(sched.date.getDate() + 7); loadWeek(); };
+}
+
+/** "5:15 AM" -> minutes past midnight, so rows sort by clock not by string. */
+function minutes(t) {
+  const m = String(t || '').match(/(\d{1,2})(?::(\d{2}))?\s*([ap])/i);
+  if (!m) return 9999;
+  let h = Number(m[1]) % 12;
+  if (/p/i.test(m[3])) h += 12;
+  return h * 60 + Number(m[2] || 0);
+}
+
 function renderSchedule() {
-  const nav = `<div class="datenav">
+  const nav = viewToggle() + `<div class="datenav">
       <button id="prev" aria-label="Previous day">‹</button>
       <div class="label">${esc(pretty(sched.date))}</div>
       <button id="next" aria-label="Next day">›</button>
