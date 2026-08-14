@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#08182E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Gauntlet Coach</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#08182E; --card:#0F2743; --line:#1D3D63;
+  --white:#fff; --chalk:#A9BFD8; --blue:#3D8BFF; --warn:#F2B441;
+  --pad:16px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ink);color:var(--white);
+  font-family:Inter,system-ui,sans-serif;font-size:16px;line-height:1.45;
+  display:flex;flex-direction:column;overscroll-behavior:none;
+}
+h1,h2,h3,.cond{font-family:'Barlow Condensed',Impact,sans-serif;text-transform:uppercase;letter-spacing:.02em;margin:0}
+
+/* ---- header ---- */
+header{padding:calc(env(safe-area-inset-top) + 12px) var(--pad) 0;flex:none}
+.brand{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.brand h1{font-size:22px;font-weight:700}
+.stamp{font-size:11px;color:var(--chalk);text-align:right;line-height:1.3}
+.days{display:flex;gap:6px;overflow-x:auto;padding:12px 0 10px;scrollbar-width:none}
+.days::-webkit-scrollbar{display:none}
+.day{
+  flex:none;border:1px solid var(--line);background:transparent;color:var(--chalk);
+  border-radius:999px;padding:7px 15px;font:600 14px/1 'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.06em;cursor:pointer;
+}
+.day[aria-pressed="true"]{background:var(--white);color:var(--ink);border-color:var(--white)}
+.day.today::after{content:'';display:block;width:4px;height:4px;border-radius:50%;background:var(--blue);margin:4px auto -8px}
+
+/* ---- panes ---- */
+.tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.tab{
+  flex:1;background:none;border:0;border-bottom:2px solid transparent;color:var(--chalk);
+  padding:11px 0;font:600 14px/1 'Barlow Condensed',sans-serif;text-transform:uppercase;
+  letter-spacing:.08em;cursor:pointer;
+}
+.tab[aria-selected="true"]{color:var(--white);border-bottom-color:var(--blue)}
+main{flex:1;display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none}
+main::-webkit-scrollbar{display:none}
+section{flex:none;width:100%;scroll-snap-align:start;overflow-y:auto;padding:14px var(--pad) 90px}
+
+/* ---- tier switch ---- */
+.tier{display:flex;gap:6px;margin-bottom:14px}
+.tier button{
+  flex:1;border:1px solid var(--line);background:transparent;color:var(--chalk);border-radius:8px;
+  padding:9px;font:600 14px/1 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.1em;cursor:pointer;
+}
+.tier button[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:var(--white)}
+.tier button.black[aria-pressed="true"]{background:var(--white);border-color:var(--white);color:var(--ink)}
+
+/* ---- towers ---- */
+.tower{border-top:1px solid var(--line);padding:14px 0}
+.tower:first-of-type{border-top:0;padding-top:0}
+.tower h2{font-size:15px;color:var(--chalk);font-weight:600;margin-bottom:8px}
+.combo{display:flex;flex-wrap:wrap;gap:6px 7px}
+.tok{
+  font:600 20px/1.1 'Barlow Condensed',sans-serif;letter-spacing:.02em;
+  border:0;background:none;color:var(--white);padding:2px 0;cursor:default;
+}
+.tok.known{cursor:pointer;border-bottom:2px solid var(--blue)}
+.tok.known:active{color:var(--blue)}
+.brk{flex-basis:100%;height:0}
+.gloss{
+  grid-column:1/-1;flex-basis:100%;margin-top:6px;padding:8px 11px;border-left:2px solid var(--blue);
+  background:rgba(61,139,255,.1);font-size:14px;color:var(--white);border-radius:0 6px 6px 0;
+}
+.empty{color:var(--chalk);font-size:14px;font-style:italic}
+
+/* ---- workout ---- */
+.wk{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:var(--card)}
+.wk h2{font-size:19px;margin-bottom:2px}
+.focus{color:var(--blue);font-size:13px;font-weight:600;margin-bottom:12px}
+.row{border-top:1px solid var(--line);padding:11px 0}
+.row:first-of-type{border-top:0;padding-top:0}
+.row h3{font-size:12px;color:var(--chalk);letter-spacing:.1em;margin-bottom:4px}
+.row p{margin:0;font-size:15px;white-space:pre-wrap}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;font:600 12px/1 'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.09em;padding:6px 10px;border-radius:999px;margin-bottom:12px;
+}
+.badge.ok{background:rgba(61,139,255,.16);color:var(--blue)}
+.badge.no{background:rgba(242,180,65,.16);color:var(--warn)}
+.note{border-left:2px solid var(--warn);background:rgba(242,180,65,.08);padding:10px 12px;border-radius:0 6px 6px 0;font-size:14px}
+
+/* ---- announcements ---- */
+.banner{
+  border-left:3px solid var(--blue);background:rgba(61,139,255,.12);
+  padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:14px;
+}
+.banner h3{font-size:15px;margin-bottom:2px}
+.banner p{margin:0;font-size:14px;color:var(--chalk)}
+.banner .more{display:inline-block;margin-top:6px;font-size:12px;color:var(--blue);cursor:pointer}
+.news{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:13px;margin-bottom:10px}
+.news h3{font-size:17px;margin-bottom:3px}
+.news .meta{font-size:11px;color:var(--chalk);letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
+.news p{margin:0;font-size:15px;white-space:pre-wrap}
+textarea{
+  width:100%;min-height:96px;padding:11px;border-radius:9px;border:1px solid var(--line);
+  background:var(--card);color:var(--white);font:inherit;font-size:15px;resize:vertical;margin:10px 0;
+}
+input[type=text],input[type=date]{
+  width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);
+  background:var(--card);color:var(--white);font-size:15px;margin:10px 0;
+}
+.ok{color:var(--blue);font-size:14px}
+
+/* ---- schedule ---- */
+.datenav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.datenav button{
+  border:1px solid var(--line);background:var(--card);color:var(--white);border-radius:9px;
+  width:40px;height:38px;font-size:17px;cursor:pointer;flex:none;
+}
+.datenav .label{flex:1;text-align:center;font:600 17px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.05em}
+.slot{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px;margin-bottom:9px}
+.slot.open{border-color:var(--warn)}
+.slot .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.slot .when{font:600 17px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.04em}
+.slot .cls{font-size:13px;color:var(--blue);font-weight:600}
+.slot .who{margin-top:6px;font-size:15px}
+.slot .who.none{color:var(--chalk);font-style:italic}
+.slot .acts{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}
+.slot .acts button{
+  border:1px solid var(--line);background:transparent;color:var(--white);border-radius:8px;
+  padding:8px 13px;font:600 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;
+  letter-spacing:.07em;cursor:pointer;
+}
+.slot .acts button.take{background:var(--warn);border-color:var(--warn);color:#1a1200}
+.ask{margin-top:8px;padding:8px 11px;border-left:2px solid var(--warn);background:rgba(242,180,65,.1);
+  border-radius:0 6px 6px 0;font-size:13px}
+.pick{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}
+.pick button{
+  border:1px solid var(--line);background:var(--card);color:var(--white);border-radius:999px;
+  padding:9px 15px;font-size:14px;cursor:pointer;
+}
+.pick button[aria-pressed="true"]{background:var(--blue);border-color:var(--blue)}
+
+.slot.closed{opacity:.55}
+.slot.closed .who{text-decoration:line-through}
+.evt{border:1px solid var(--blue);background:rgba(61,139,255,.09);border-radius:12px;padding:12px;margin-bottom:9px}
+.evt .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.evt h3{font-size:17px}
+.evt .meta{font-size:13px;color:var(--chalk);margin-top:4px}
+.evt.meeting{border-color:var(--line);background:var(--card)}
+.tagline{font:600 11px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.1em;color:var(--blue)}
+
+.slot.off{opacity:.55}
+.slot.off .when{text-decoration:line-through}
+.slot .flag{display:inline-block;margin-top:6px;font:600 11px 'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.09em;padding:4px 8px;border-radius:999px}
+.slot .flag.off{background:rgba(255,255,255,.1);color:var(--chalk)}
+.slot .flag.pop{background:rgba(61,139,255,.18);color:var(--blue)}
+.evt{border:1px solid var(--blue);background:rgba(61,139,255,.08);border-radius:12px;padding:12px;margin-bottom:9px}
+.evt h3{font-size:17px;margin-bottom:3px}
+.evt .meta{font-size:12px;color:var(--chalk);margin-bottom:5px}
+.evt p{margin:0;font-size:14px}
+.addrow{display:flex;gap:8px;margin-top:8px}
+.addrow button{flex:1;padding:12px 6px;border-radius:10px;border:1px dashed var(--line);
+  background:transparent;color:var(--chalk);font:600 12px 'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.07em;cursor:pointer}
+
+/* ---- bottom bar ---- */
+footer{
+  position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;
+  padding:10px var(--pad) calc(env(safe-area-inset-bottom) + 10px);
+  background:linear-gradient(to top,var(--ink) 72%,transparent);
+}
+footer button{
+  flex:1;border:1px solid var(--line);background:var(--card);color:var(--white);border-radius:10px;
+  padding:12px 6px;font:600 13px/1 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.07em;cursor:pointer;
+}
+footer button.primary{background:var(--blue);border-color:var(--blue)}
+
+/* ---- confirm sheet ---- */
+dialog{
+  border:0;padding:0;background:var(--ink);color:var(--white);width:100%;max-width:560px;
+  border-radius:14px;margin:auto;
+}
+dialog::backdrop{background:rgba(4,10,20,.7)}
+.sheet{padding:18px var(--pad) var(--pad)}
+.sheet h2{font-size:20px;margin-bottom:4px}
+.sub{color:var(--chalk);font-size:14px;margin-bottom:14px}
+.rev{border:1px solid var(--line);border-radius:10px;padding:11px;margin-bottom:8px}
+.rev.bad{border-color:var(--warn)}
+.rev h4{margin:0 0 4px;font:600 14px/1 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
+.rev p{margin:0;font-size:13px;color:var(--chalk);white-space:pre-wrap}
+input[type=email]{
+  width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);
+  background:var(--card);color:var(--white);font-size:15px;margin:10px 0;
+}
+.err{color:var(--warn);font-size:13px;margin-top:8px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>Gauntlet Coach</h1>
+    <div class="stamp" id="stamp"></div>
+  </div>
+  <div class="days" id="days" role="group" aria-label="Day of week"></div>
+</header>
+
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" aria-selected="true" data-pane="0">Combos</button>
+  <button class="tab" role="tab" aria-selected="false" data-pane="1">Workout</button>
+  <button class="tab" role="tab" aria-selected="false" data-pane="2">Schedule</button>
+  <button class="tab" role="tab" aria-selected="false" data-pane="3">News</button>
+</div>
+
+<main id="main">
+  <section id="pane-combos">
+    <div class="tier" role="group" aria-label="Tier">
+      <button id="t-blue" aria-pressed="true">Blue</button>
+      <button id="t-black" class="black" aria-pressed="false">Black</button>
+    </div>
+    <div id="towers"></div>
+  </section>
+  <section id="pane-workout"></section>
+  <section id="pane-schedule"></section>
+  <section id="pane-news"></section>
+</main>
+
+<footer>
+  <button id="btn-repair">Coach note</button>
+  <button id="btn-post" hidden>Post news</button>
+  <button id="btn-confirm" class="primary" hidden>Confirm week</button>
+</footer>
+
+<dialog id="dlg"><div class="sheet" id="sheet"></div></dialog>
+
+<script>
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const state = { day: DAYS[new Date().getDay()], tier: 'BLUE', data: null };
+const $ = s => document.querySelector(s);
+
+/* Day chips: Mon–Sat only. Sunday falls back to Saturday's kickboxing. */
+const chips = DAYS.slice(1);
+$('#days').innerHTML = chips.map(d =>
+  `<button class="day${d === DAYS[new Date().getDay()] ? ' today' : ''}" data-day="${d}"
+     aria-pressed="${d === (state.day === 'Sunday' ? 'Saturday' : state.day)}">${d.slice(0,3)}</button>`).join('');
+if (state.day === 'Sunday') state.day = 'Saturday';
+
+$('#days').addEventListener('click', e => {
+  const b = e.target.closest('.day'); if (!b) return;
+  state.day = b.dataset.day; load();
+});
+document.querySelectorAll('.tier button').forEach(b => b.addEventListener('click', () => {
+  state.tier = b.id === 't-blue' ? 'BLUE' : 'BLACK';
+  $('#t-blue').setAttribute('aria-pressed', state.tier === 'BLUE');
+  $('#t-black').setAttribute('aria-pressed', state.tier === 'BLACK');
+  renderTowers();
+}));
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  $('#main').scrollTo({ left: $('#main').clientWidth * Number(t.dataset.pane), behavior: 'smooth' });
+}));
+$('#main').addEventListener('scroll', () => {
+  const i = Math.round($('#main').scrollLeft / $('#main').clientWidth);
+  document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', Number(t.dataset.pane) === i));
+});
+
+async function load() {
+  document.querySelectorAll('.day').forEach(b =>
+    b.setAttribute('aria-pressed', b.dataset.day === state.day));
+  $('#towers').innerHTML = '<p class="empty">Loading…</p>';
+  let d;
+  try {
+    const r = await fetch(`/api/day?day=${state.day}`);
+    d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `Server returned ${r.status}`);
+  } catch (err) {
+    // Say what actually went wrong. A spinner that never resolves tells a
+    // coach nothing and tells whoever's debugging even less.
+    const msg = /fetch|network/i.test(err.message)
+      ? 'No connection. Try again once you\'re back on wifi.'
+      : err.message;
+    $('#towers').innerHTML =
+      `<p class="empty">Couldn't load today's programming.</p>
+       <p class="empty" style="font-family:ui-monospace,monospace;font-size:12px">${esc(msg)}</p>
+       <button id="retry" style="margin-top:12px;padding:10px 18px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--white);font:600 14px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.07em">Try again</button>`;
+    $('#retry').onclick = load;
+    $('#stamp').textContent = '';
+    $('#pane-workout').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
+    $('#pane-news').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
+    return;
+  }
+  state.data = d;
+  renderNews();
+  const synced = new Date(d.updatedAt);
+  $('#stamp').innerHTML = `${esc(d.weekTitle || '')}<br>${
+    isNaN(synced) ? '' : 'Synced ' + synced.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}`;
+  renderTowers(); renderWorkout();
+}
+
+function renderTowers() {
+  const d = state.data; if (!d) return;
+  $('#towers').innerHTML = d.towers.map(t => {
+    const lines = t[state.tier] || [];
+    const body = lines.length && lines.some(l => l.length)
+      ? lines.map(line => line.map(tok =>
+          `<button class="tok ${tok.meaning ? 'known' : ''}"${tok.meaning ? ` data-gloss="${esc(tok.meaning)}"` : ''}>${esc(tok.text)}</button>`
+        ).join('') + '<i class="brk"></i>').join('')
+      : '<p class="empty">Nothing programmed for this tower today.</p>';
+    return `<div class="tower"><h2>${esc(t.tower)}</h2><div class="combo">${body}</div></div>`;
+  }).join('');
+}
+
+/* Tapping a code drops its meaning inline — no leaving for the Notation Key. */
+$('#towers').addEventListener('click', e => {
+  const b = e.target.closest('.tok.known'); if (!b) return;
+  const combo = b.closest('.combo');
+  const open = combo.querySelector('.gloss');
+  const same = open && open.dataset.for === b.textContent;
+  if (open) open.remove();
+  if (same) return;
+  const g = document.createElement('div');
+  g.className = 'gloss'; g.dataset.for = b.textContent;
+  g.textContent = `${b.textContent} — ${b.dataset.gloss}`;
+  combo.appendChild(g);
+});
+
+function renderWorkout() {
+  const p = state.data.programming;
+  if (p.saturday) {
+    $('#pane-workout').innerHTML =
+      `<div class="wk"><h2>Saturday</h2><div class="focus">Coach-led</div>
+       <p class="row">Saturday strength is run by the Saturday coach and isn't programmed here. Combos are on the Combos tab.</p></div>`;
+    return;
+  }
+  const w = p.workout;
+  const badge = p.confirmed
+    ? `<span class="badge ok">${esc(p.weekLabel || '')} · confirmed${p.confirmedBy ? ' · ' + esc(p.confirmedBy) : ''}</span>`
+    : `<span class="badge no">${esc(p.weekLabel || 'Week unknown')} · not confirmed yet</span>`;
+  if (!w) { $('#pane-workout').innerHTML = badge + '<p class="empty">No workout block for this day.</p>'; return; }
+  if (w.empty) {
+    $('#pane-workout').innerHTML = badge +
+      `<div class="wk"><h2>${esc(w.focus || state.day)}</h2>
+       <p class="note">This day hasn't been written yet. Kendall or Ivan still needs to fill in the card.</p></div>`;
+    return;
+  }
+  const row = (label, v) => v && v.trim() ? `<div class="row"><h3>${label}</h3><p>${esc(v)}</p></div>` : '';
+  $('#pane-workout').innerHTML = badge + `<div class="wk">
+    <h2>${esc(w.name || state.day)}</h2><div class="focus">${esc(w.focus || '')}</div>
+    ${row('Warm-up', w.warmUp)}${row('Main workout', w.main)}${row('Finisher', w.finisher)}
+    ${row('Coaching cues', w.cues)}${row('Equipment', w.equipment)}
+    ${w.notes && w.notes.trim() ? `<div class="row"><h3>From the coaches</h3><div class="note">${esc(w.notes)}</div></div>` : ''}
+  </div>`;
+}
+
+function renderNews() {
+  const list = (state.data && state.data.announcements) || [];
+
+  // Banner sits on the Combos pane, because that's what's open at the start
+  // of class — which is when you read the announcement out.
+  const old = document.querySelector('#pane-combos .banner');
+  if (old) old.remove();
+  if (list.length) {
+    const a = list[0];
+    const b = document.createElement('div');
+    b.className = 'banner';
+    b.innerHTML = `<h3>${esc(a.title)}</h3><p>${esc(a.message || '')}</p>` +
+      (list.length > 1 ? `<span class="more">+${list.length - 1} more in News</span>` : '');
+    $('#pane-combos').insertBefore(b, $('#pane-combos').firstChild);
+    b.querySelector('.more')?.addEventListener('click', () =>
+      $('#main').scrollTo({ left: $('#main').clientWidth * 2, behavior: 'smooth' }));
+  }
+
+  $('#pane-news').innerHTML = list.length
+    ? list.map(a => `<div class="news"><h3>${esc(a.title)}</h3>
+        <div class="meta">${esc(a.posted || '')}${a.by ? ' · ' + esc(a.by) : ''}</div>
+        ${a.message ? `<p>${esc(a.message)}</p>` : ''}</div>`).join('')
+    : '<p class="empty">Nothing posted right now.</p>';
+}
+
+/* ---------- write actions ---------- */
+
+/**
+ * Who's holding the phone. The record lives in the Staff tab keyed by email;
+ * the phone only remembers which record is theirs, so clearing the browser
+ * costs one re-entry rather than losing the person.
+ */
+const me = { email: '', name: '', canConfirm: false, canAnnounce: false, canSchedule: false };
+
+function identity() { return me.email; }
+function displayName() { return me.name; }
+
+async function bootIdentity() {
+  me.email = (localStorage.getItem('gauntlet-email') || '').toLowerCase().trim();
+  if (!me.email) return intake();
+  try {
+    const d = await (await fetch(`/api/whoami?email=${encodeURIComponent(me.email)}`)).json();
+    if (!d.known) return intake();          // record vanished from the sheet
+    me.name = d.me.name;
+    me.canConfirm = d.canConfirm; me.canAnnounce = d.canAnnounce; me.canSchedule = d.canSchedule;
+  } catch { return; }
+  $('#btn-confirm').hidden = !me.canConfirm;
+  $('#btn-post').hidden = !me.canAnnounce;
+}
+
+/** First run only. Everything after this is silent. */
+function intake() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Welcome to Gauntlet Coach</h2>
+    <p class="sub">One time only — this is how swap requests know who's asking.</p>
+    <input type="text" id="i-name" placeholder="your name" autocomplete="name">
+    <input type="email" id="i-email" placeholder="email" autocomplete="email">
+    <input type="text" id="i-phone" placeholder="phone (optional)" autocomplete="tel">
+    <button class="primary" id="i-go" style="width:100%;padding:13px;border-radius:10px;border:0;background:var(--blue);color:#fff;font:600 14px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em;margin-top:6px;cursor:pointer">Get started</button>
+    <div class="err" id="err"></div>`;
+
+  $('#i-go').onclick = async () => {
+    const name = $('#i-name').value.trim();
+    const email = $('#i-email').value.trim().toLowerCase();
+    $('#i-go').disabled = true; $('#i-go').textContent = 'Setting up…';
+    try {
+      const r = await fetch('/api/staff', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, phone: $('#i-phone').value.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      localStorage.setItem('gauntlet-email', email);
+      $('#dlg').close();
+      await bootIdentity();
+      loadSchedule();
+    } catch (e) {
+      $('#err').textContent = e.message;
+      $('#i-go').disabled = false; $('#i-go').textContent = 'Get started';
+    }
+  };
+}
+
+const REQUESTS = {
+  repair: { title: 'Coach note', hint: 'Broken bag, a tower that needs attention, anything worth flagging.' },
+};
+
+$('#btn-repair').addEventListener('click', () => openRequest('repair'));
+
+function openRequest(type) {
+  const cfg = REQUESTS[type];
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>${cfg.title}</h2>
+    <p class="sub">${cfg.hint}</p>
+    <input type="text" id="from" placeholder="your name" value="${esc(displayName())}">
+    <textarea id="details" placeholder="What's going on?"></textarea>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="send">Send</button>
+    </footer><div class="err" id="err"></div>`;
+
+  $('#send').onclick = async () => {
+    const from = $('#from').value.trim() || me.name;
+    const details = $('#details').value.trim();
+    $('#send').disabled = true; $('#send').textContent = 'Sending…';
+    try {
+      const r = await fetch('/api/request', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, from, details }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      $('#sheet').innerHTML = `<h2>Sent</h2>
+        <p class="sub">It's logged and the front office has been emailed.</p>
+        <button class="primary" onclick="dlg.close()" style="width:100%;padding:12px;border-radius:10px;border:0;background:var(--blue);color:#fff;font:600 14px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.07em">Done</button>`;
+    } catch (e) {
+      $('#err').textContent = e.message;
+      $('#send').disabled = false; $('#send').textContent = 'Send';
+    }
+  };
+}
+
+/* ---------- post an announcement ---------- */
+
+$('#btn-post').addEventListener('click', () => {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Post an announcement</h2>
+    <p class="sub">Coaches see this at the top of the day's combos.</p>
+    <input type="text" id="title" placeholder="headline — e.g. Labor Day schedule">
+    <textarea id="message" placeholder="Details coaches should read out."></textarea>
+    <label class="sub" for="expires">Hide after (optional)</label>
+    <input type="date" id="expires">
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="post">Post</button>
+    </footer><div class="err" id="err"></div>`;
+
+  $('#post').onclick = async () => {
+    $('#post').disabled = true; $('#post').textContent = 'Posting…';
+    try {
+      const r = await fetch('/api/announcements', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: identity(),
+          title: $('#title').value, message: $('#message').value, expires: $('#expires').value,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      state.data.announcements = d.announcements;
+      renderNews();
+      $('#dlg').close();
+    } catch (e) {
+      $('#err').textContent = e.message;
+      $('#post').disabled = false; $('#post').textContent = 'Post';
+    }
+  };
+});
+
+/* ---------- schedule ---------- */
+
+const sched = { date: new Date(), slots: [], staff: [] };
+const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+const pretty = d => d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+
+async function loadSchedule() {
+  $('#pane-schedule').innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch(`/api/schedule?date=${iso(sched.date)}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    sched.slots = d.slots; sched.staff = d.staff || []; sched.events = d.events || []; sched.events = d.events || [];
+  } catch (e) {
+    $('#pane-schedule').innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+    return;
+  }
+  renderSchedule();
+}
+
+function renderSchedule() {
+  const nav = `<div class="datenav">
+      <button id="prev" aria-label="Previous day">‹</button>
+      <div class="label">${esc(pretty(sched.date))}</div>
+      <button id="next" aria-label="Next day">›</button>
+    </div>`;
+
+  const events = (sched.events || []).map(e => `
+    <div class="evt ${/meeting/i.test(e.kind) ? 'meeting' : ''}">
+      <div class="top"><h3>${esc(e.title)}</h3><span class="tagline">${esc(e.kind)}</span></div>
+      <div class="meta">${[e.time, e.location].filter(Boolean).map(esc).join(' · ')}</div>
+      ${e.who ? `<div class="meta">${esc(e.who)}</div>` : ''}
+      ${me.canSchedule ? `<div class="acts"><button data-act="delevent" data-row="${e.row}">Remove</button></div>` : ''}
+    </div>`).join('');
+
+  const body = sched.slots.length ? sched.slots.map(s => {
+    const mine = me.name && s.coach === me.name;
+    const req = s.request;
+    const acts = [];
+    // Your own shift: hand it off. Someone else's open shift: take it.
+    if (mine && !req) acts.push(`<button data-act="cover" data-row="${s.row}">Need cover</button>`,
+                                `<button data-act="trade" data-row="${s.row}">Ask a trade</button>`);
+    if (req && req.from !== me.name) acts.push(`<button class="take" data-act="take" data-req="${req.row}">Take it</button>`);
+    if (me.canSchedule) acts.push(
+      `<button data-act="assign" data-row="${s.row}">Assign</button>`,
+      `<button data-act="edit" data-row="${s.row}">Edit</button>`,
+      `<button data-act="del" data-row="${s.row}">Delete</button>`);
+
+    return `<div class="slot ${req ? 'open' : ''} ${s.closed ? 'closed' : ''}"
+        data-time="${esc(s.time)}" data-class="${esc(s.klass)}" data-day="${esc(s.day)}" data-coach="${esc(s.coach)}">
+      <div class="top"><span class="when">${esc(s.time)}</span><span class="cls">${esc(s.klass || '')}</span></div>
+      <div class="who ${s.coach ? '' : 'none'}">${esc(s.coach || 'Unassigned')}${s.covered ? ' · covering' : ''}</div>
+      ${s.closed ? `<div class="ask">${esc(s.closed)}</div>` : ''}
+      ${req ? `<div class="ask"><strong>${esc(req.from)}</strong> needs ${req.type.toLowerCase() === 'trade' ? `a trade${req.to ? ' with ' + esc(req.to) : ''}` : 'cover'}${req.note ? ' — ' + esc(req.note) : ''}</div>` : ''}
+      ${acts.length ? `<div class="acts">${acts.join('')}</div>` : ''}
+    </div>`;
+  }).join('') : '<p class="empty">No classes scheduled this day.</p>';
+
+  const add = me.canSchedule
+    ? `<button id="addslot" style="width:100%;margin-top:6px;padding:12px;border-radius:10px;border:1px dashed var(--line);background:transparent;color:var(--chalk);font:600 13px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em;cursor:pointer">+ Add class slot</button>`
+    : '';
+
+  const addEvt = me.canSchedule
+    ? `<button id="addevent" style="width:100%;margin-top:6px;padding:12px;border-radius:10px;border:1px dashed var(--line);background:transparent;color:var(--chalk);font:600 13px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em;cursor:pointer">+ Add event or closure</button>`
+    : '';
+  $('#pane-schedule').innerHTML = nav + events + body + add + addEvt;
+  if ($('#addevent')) $('#addevent').onclick = addEvent;
+  $('#prev').onclick = () => { sched.date.setDate(sched.date.getDate() - 1); loadSchedule(); };
+  $('#next').onclick = () => { sched.date.setDate(sched.date.getDate() + 1); loadSchedule(); };
+  if ($('#addslot')) $('#addslot').onclick = addSlot;
+}
+
+$('#pane-schedule').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]'); if (!b) return;
+  const slotEl = b.closest('.slot');
+  const slot = slotEl && { time: slotEl.dataset.time, klass: slotEl.dataset.class };
+
+  if (b.dataset.act === 'take') {
+    b.disabled = true; b.textContent = '…';
+    await post('/api/swap/accept', { email: me.email, row: Number(b.dataset.req) });
+    return loadSchedule();
+  }
+  if (b.dataset.act === 'assign') return assignSlot(Number(b.dataset.row), slot);
+  if (b.dataset.act === 'edit') return editSlot(Number(b.dataset.row), slotEl.dataset);
+  if (b.dataset.act === 'del') return confirmDelete(Number(b.dataset.row), slotEl.dataset);
+  if (b.dataset.act === 'delevent') {
+    await post('/api/events/delete', { email: me.email, row: Number(b.dataset.row) });
+    return loadSchedule();
+  }
+  askSwap(b.dataset.act, slot);
+});
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert(d.error); throw new Error(d.error); }
+  return d;
+}
+
+function askSwap(type, slot) {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>${type === 'trade' ? 'Ask a trade' : 'Need cover'}</h2>
+    <p class="sub">${esc(slot.time)} · ${esc(slot.klass)} · ${esc(pretty(sched.date))}</p>
+    ${type === 'trade' ? `<p class="sub">Who are you asking?</p>
+      <div class="pick" id="pick">${sched.staff.filter(n => n !== me.name)
+        .map(n => `<button data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}
+    <textarea id="note" placeholder="Anything they should know?"></textarea>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="go">Send request</button>
+    </footer><div class="err" id="err"></div>`;
+
+  let target = '';
+  if ($('#pick')) $('#pick').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    target = b.dataset.name;
+    $('#pick').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
+
+  $('#go').onclick = async () => {
+    $('#go').disabled = true; $('#go').textContent = 'Sending…';
+    try {
+      await post('/api/swap', {
+        email: me.email, date: iso(sched.date), time: slot.time, klass: slot.klass,
+        type, target, note: $('#note').value,
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch { $('#go').disabled = false; $('#go').textContent = 'Send request'; }
+  };
+}
+
+function assignSlot(row, slot) {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Assign coach</h2>
+    <p class="sub">${esc(slot.time)} · ${esc(slot.klass)} · every ${esc(pretty(sched.date).split(',')[0])}</p>
+    <div class="pick" id="pick">
+      ${sched.staff.map(n => `<button data-name="${esc(n)}">${esc(n)}</button>`).join('')}
+      <button data-name="">Unassign</button>
+    </div>
+    <div class="err" id="err"></div>`;
+  $('#pick').onclick = async ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    try {
+      await post('/api/schedule/assign', { email: me.email, row, coach: b.dataset.name });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+function dayPicker(selected) {
+  return `<div class="pick" id="days">${DAYS.slice(1).map(d =>
+    `<button data-day="${d}"${d === selected ? ' aria-pressed="true"' : ''}>${d.slice(0,3)}</button>`).join('')}</div>`;
+}
+function wireDays(initial, set) {
+  let v = initial;
+  $('#days').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    v = b.dataset.day; set(v);
+    $('#days').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
+  return () => v;
+}
+
+function editSlot(row, d) {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Edit slot</h2>
+    <p class="sub">Changing this changes it every week.</p>
+    ${dayPicker(d.day)}
+    <input type="text" id="time" placeholder="time" value="${esc(d.time)}">
+    <input type="text" id="klass" placeholder="label (optional) — e.g. Fire, Kickboxing" value="${esc(d.class)}">
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="go">Save</button>
+    </footer><div class="err" id="err"></div>`;
+  const getDay = wireDays(d.day, () => {});
+  $('#go').onclick = async () => {
+    try {
+      await post('/api/schedule/slot/update', {
+        email: me.email, row, day: getDay(),
+        time: $('#time').value.trim(), klass: $('#klass').value.trim(), coach: d.coach,
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+/** Deleting removes the slot from every week, so it asks first. */
+function confirmDelete(row, d) {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Delete this slot?</h2>
+    <p class="sub">${esc(d.day)} · ${esc(d.time)}${d.class ? ' · ' + esc(d.class) : ''}${d.coach ? ' · ' + esc(d.coach) : ''}</p>
+    <p class="sub">It disappears from every week, not just this date. To cancel one day only, add a closure instead.</p>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Keep it</button>
+      <button class="primary" id="go" style="background:var(--warn);border-color:var(--warn);color:#1a1200">Delete</button>
+    </footer><div class="err" id="err"></div>`;
+  $('#go').onclick = async () => {
+    try { await post('/api/schedule/slot/delete', { email: me.email, row }); $('#dlg').close(); loadSchedule(); }
+    catch {}
+  };
+}
+
+/** One-offs: an off-site event, an admin meeting, or a cancelled class. */
+function addEvent() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Add to ${esc(pretty(sched.date))}</h2>
+    <div class="pick" id="kind">
+      <button data-kind="Event" aria-pressed="true">Event</button>
+      <button data-kind="Meeting">Meeting</button>
+      <button data-kind="Closed">Class cancelled</button>
+    </div>
+    <input type="text" id="title" placeholder="name — e.g. Fitfest, Admin meeting, No noon class">
+    <input type="text" id="time" placeholder="time (optional — blank cancels the whole day)">
+    <input type="text" id="loc" placeholder="where (optional)">
+    <p class="sub" id="wholbl">Who's working it?</p>
+    <div class="pick" id="who">${sched.staff.map(n => `<button data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="go">Add</button>
+    </footer><div class="err" id="err"></div>`;
+
+  let kind = 'Event';
+  const who = new Set();
+  $('#kind').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    kind = b.dataset.kind;
+    $('#kind').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    const hide = kind === 'Closed';                 // nobody staffs a cancellation
+    $('#who').style.display = hide ? 'none' : '';
+    $('#wholbl').style.display = hide ? 'none' : '';
+  };
+  // Events can have several people on them — Paul and Mason assisting, say.
+  $('#who').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    const n = b.dataset.name;
+    who.has(n) ? who.delete(n) : who.add(n);
+    b.setAttribute('aria-pressed', who.has(n));
+  };
+
+  $('#go').onclick = async () => {
+    try {
+      await post('/api/events', {
+        email: me.email, date: iso(sched.date), kind,
+        title: $('#title').value.trim(), time: $('#time').value.trim(),
+        location: $('#loc').value.trim(), who: [...who],
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+/** Retime, relabel, or delete a standing slot. Delete is permanent — the
+ *  "just this week" version is the No class button on the slot itself. */
+function editSlot(row, slot) {
+  const cur = sched.slots.find(s => s.row === row) || {};
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Edit slot</h2>
+    <p class="sub">Changes every ${esc(pretty(sched.date).split(',')[0])}, not just this week.</p>
+    <input type="text" id="e-time" placeholder="time" value="${esc(cur.time || '')}">
+    <input type="text" id="e-class" placeholder="class (optional)" value="${esc(cur.klass || '')}">
+    <input type="text" id="e-assist" placeholder="assisting (optional)" value="${esc(cur.assisting || '')}">
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button id="e-del" style="color:var(--warn)">Delete</button>
+      <button class="primary" id="e-save">Save</button>
+    </footer><div class="err" id="err"></div>`;
+
+  $('#e-save').onclick = async () => {
+    try {
+      await post('/api/schedule/slot/update', {
+        email: me.email, row, day: cur.day, time: $('#e-time').value.trim(),
+        klass: $('#e-class').value.trim(), coach: cur.coach, assisting: $('#e-assist').value.trim(),
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+  $('#e-del').onclick = async () => {
+    if (!confirm('Delete this slot from every week? Use "No class" if you only mean this week.')) return;
+    try {
+      await post('/api/schedule/slot/delete', { email: me.email, row });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+function addOneOff() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>One-off class</h2>
+    <p class="sub">${esc(pretty(sched.date))} only — it won't repeat.</p>
+    <input type="text" id="o-time" placeholder="time — e.g. 11:00 AM">
+    <input type="text" id="o-class" placeholder="what it is (optional)">
+    <p class="sub">Who's running it?</p>
+    <div class="pick" id="o-who">${sched.staff.map(n => `<button data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="o-go">Add</button>
+    </footer><div class="err" id="err"></div>`;
+  let coach = '';
+  $('#o-who').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    coach = b.dataset.name;
+    $('#o-who').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
+  $('#o-go').onclick = async () => {
+    try {
+      await post('/api/schedule/oneoff', {
+        email: me.email, date: iso(sched.date), time: $('#o-time').value.trim(),
+        klass: $('#o-class').value.trim(), coach,
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+/** Fitfest, an admin meeting, a promo appearance — not a class. */
+function addEvent() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Add event</h2>
+    <p class="sub">${esc(pretty(sched.date))}</p>
+    <input type="text" id="v-title" placeholder="what it is — e.g. Red Bull Slay">
+    <input type="text" id="v-time" placeholder="time (optional)">
+    <input type="text" id="v-where" placeholder="where (optional)">
+    <p class="sub">Who's working it? Tap everyone involved.</p>
+    <div class="pick" id="v-who">${sched.staff.map(n => `<button data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="v-go">Add</button>
+    </footer><div class="err" id="err"></div>`;
+  const who = new Set();
+  $('#v-who').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    const n = b.dataset.name;
+    who.has(n) ? who.delete(n) : who.add(n);
+    b.setAttribute('aria-pressed', who.has(n));
+  };
+  $('#v-go').onclick = async () => {
+    try {
+      await post('/api/events', {
+        email: me.email, date: iso(sched.date), title: $('#v-title').value.trim(),
+        time: $('#v-time').value.trim(), location: $('#v-where').value.trim(), who: [...who],
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+function addSlot() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Add class slot</h2>
+    <p class="sub">This repeats every week until you change it.</p>
+    <div class="pick" id="days">${DAYS.slice(1).map(d =>
+      `<button data-day="${d}"${d === pretty(sched.date).split(',')[0] ? ' aria-pressed="true"' : ''}>${d.slice(0,3)}</button>`).join('')}</div>
+    <input type="text" id="time" placeholder="time — e.g. 6:00 PM">
+    <input type="text" id="klass" placeholder="label (optional) — e.g. Fire, Kickboxing">
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="go">Add</button>
+    </footer><div class="err" id="err"></div>`;
+  let day = pretty(sched.date).split(',')[0];
+  $('#days').onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    day = b.dataset.day;
+    $('#days').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
+  $('#go').onclick = async () => {
+    try {
+      await post('/api/schedule/slot', {
+        email: me.email, day, time: $('#time').value.trim(), klass: $('#klass').value.trim(),
+      });
+      $('#dlg').close(); loadSchedule();
+    } catch {}
+  };
+}
+
+/* ---------- confirm week (Kendall + Ivan) ---------- */
+
+
+$('#btn-confirm').addEventListener('click', openConfirm);
+async function openConfirm() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = '<p class="sub">Loading the week…</p>';
+  const r = await fetch('/api/week/review');
+  const d = await r.json();
+  $('#sheet').innerHTML = `
+    <h2>Confirm ${esc(d.weekLabel || '')}</h2>
+    <p class="sub">This is exactly what coaches will see Monday through Friday.</p>
+    ${d.days.map(x => `<div class="rev ${x.empty ? 'bad' : ''}">
+      <h4>${x.day}${x.empty ? ' — empty' : ''}</h4>
+      <p>${esc(x.empty ? 'No workout written yet.' : x.main)}</p></div>`).join('')}
+    <input type="email" id="who" placeholder="your email" value="${esc(identity())}">
+    <footer style="position:static;padding:0;gap:8px;background:none">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="go">Confirm week</button>
+    </footer><div class="err" id="err"></div>`;
+  $('#go').onclick = () => send(false);
+}
+async function send(force) {
+  const email = $('#who').value.trim().toLowerCase();
+  localStorage.setItem('gauntlet-email', email);
+  const r = await fetch('/api/week/confirm', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, force }),
+  });
+  const d = await r.json();
+  if (r.ok) { $('#dlg').close(); load(); return; }
+  if (d.error === 'empty_days') {
+    $('#err').innerHTML = `${d.days.join(', ')} ${d.days.length > 1 ? 'have' : 'has'} no workout.
+      <button class="primary" id="force" style="margin-top:8px">Confirm anyway</button>`;
+    $('#force').onclick = () => send(true);
+  } else $('#err').textContent = d.error;
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+
+(async () => {
+  await bootIdentity();   // permissions decide what the schedule pane offers
+  load();
+  loadSchedule();
+})();
+</script>
+</body>
+</html>
