@@ -73,9 +73,15 @@ function doPost(e) {
   }
 }
 
-/** Health check you can hit in a browser. Deliberately reveals nothing. */
+/**
+ * Health check you can hit in a browser. Reports which build is live, so a
+ * stale deployment is visible in one glance instead of being guessed at.
+ */
+const BUILD = 'build-3';
+
 function doGet() {
-  return ContentService.createTextOutput('gauntlet bridge ok');
+  return ContentService.createTextOutput(
+    'gauntlet bridge ok — ' + BUILD + ' — actions: tabs, grid, update, append, delete');
 }
 
 function tabs(id) {
