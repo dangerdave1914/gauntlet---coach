@@ -66,7 +66,15 @@ async function rpc(payload) {
       : `Got ${res.status}: ${text.slice(0, 140).replace(/\s+/g, ' ')}`;
     throw new Error('Bridge returned non-JSON. ' + clue);
   }
-  if (data.error) throw new Error('Bridge: ' + data.error);
+  if (data.error) {
+    // The bridge answering but not knowing the verb means the live deployment
+    // is older than the code — the single most common failure in this setup.
+    if (data.error === 'unknown_action') {
+      throw new Error('The Apps Script bridge is running an old version. In the editor: ' +
+        'Deploy \u2192 Manage deployments \u2192 pencil \u2192 Version: New version \u2192 Deploy.');
+    }
+    throw new Error('Bridge: ' + data.error);
+  }
   return data;
 }
 
