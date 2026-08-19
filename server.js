@@ -87,8 +87,7 @@ const deleteRow = (sheet, tab, rowIndex) => rpc({ action: 'delete', sheet, tab, 
 /* ------------------------------------------------------- cache (no DB yet) */
 
 const cache = { curriculum: null, programming: null, notation: null, at: 0 };
-const TTL_MS = 15 * 60 * 1000; // David refines mid-week; 15 min keeps coaches current.
-
+const TTL_MS = 5 * 60 * 1000; // shortened from 15 — Kendall needs changes visible sooner.
 async function warm(force = false) {
   if (!force && cache.at && Date.now() - cache.at < TTL_MS) return;
   const [curr, prog, news, staff, sched, changes] = await Promise.all([
