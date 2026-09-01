@@ -36,12 +36,14 @@ const SHEETS = {
 /** Tabs the app writes to. Created on first use so nobody has to set them up. */
 const LOGS = {
   Requests:      ['Timestamp', 'Type', 'From', 'Details', 'Status'],
-  Events:        ['Date', 'Time', 'Title', 'Who', 'Where', 'Kind'],
   Announcements: ['Posted', 'By', 'Title', 'Message', 'Expires'],
   Staff:         ['Name', 'Email', 'Phone', 'Joined'],
   Schedule:      ['Day', 'Time', 'Class', 'Coach'],
   Events:        ['Date', 'Time', 'Title', 'Who', 'Location', 'Kind'],
   'Shift Changes': ['Date', 'Time', 'Class', 'From', 'To', 'Type', 'Status', 'Note'],
+  // Key/Value pairs for small app settings — currently just which Programming
+  // month-tab is "live" when a scheduler wants to override the calendar guess.
+  Settings:      ['Key', 'Value'],
 };
 
 function doPost(e) {
@@ -65,7 +67,6 @@ function doPost(e) {
       case 'update': return json({ ok: update(id, body.tab, body.range, body.values) });
       case 'append': return json({ ok: append(id, body.tab, body.row, body.notify) });
       case 'delete': return json({ ok: deleteRow(id, body.tab, body.rowIndex) });
-      case 'delete': return json({ ok: deleteRow(id, body.tab, body.row) });
       default:       return json({ error: 'unknown_action' });
     }
   } catch (err) {
@@ -77,7 +78,7 @@ function doPost(e) {
  * Health check you can hit in a browser. Reports which build is live, so a
  * stale deployment is visible in one glance instead of being guessed at.
  */
-const BUILD = 'build-3';
+const BUILD = 'build-4';
 
 function doGet() {
   return ContentService.createTextOutput(
@@ -139,16 +140,6 @@ function append(id, tabName, row, notify) {
       }
     }
   }
-  return true;
-}
-
-/** Deletes one row. Row numbers shift afterwards, so callers must re-read. */
-function deleteRow(id, tabName, rowNumber) {
-  const sheet = SpreadsheetApp.openById(id).getSheetByName(tabName);
-  if (!sheet) throw new Error('no tab named ' + tabName);
-  if (rowNumber < 2) throw new Error('refusing to delete the header row');
-  sheet.deleteRow(rowNumber);
-  SpreadsheetApp.flush();
   return true;
 }
 
