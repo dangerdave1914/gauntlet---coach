@@ -429,18 +429,69 @@ $('#towers').addEventListener('click', e => {
   combo.appendChild(g);
 });
 
+/** Which Programming tab is live, with a Change control for schedulers only.
+ *  Auto-resets to the calendar the moment an override is cleared — nothing
+ *  to remember to undo. */
+function monthBar(p) {
+  const label = p.activeTab || 'No month tab found';
+  const tag = p.overridden
+    ? '<span class="tagline" style="color:var(--warn)">manual override</span>'
+    : '<span class="tagline">auto · calendar</span>';
+  const change = me.canSchedule
+    ? `<button id="chmonth" style="margin-left:auto;border:1px solid var(--line);background:transparent;color:var(--chalk);border-radius:7px;padding:5px 11px;font:600 11px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">Change</button>`
+    : '';
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;color:var(--white)">
+    <span>${esc(label)}</span>${tag}${change}
+  </div>`;
+}
+
+$('#pane-workout').addEventListener('click', e => {
+  if (e.target.closest('#chmonth')) openMonthPicker();
+});
+
+async function openMonthPicker() {
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = '<p class="sub">Loading months…</p>';
+  let d;
+  try {
+    const r = await fetch('/api/programming/status');
+    d = await r.json();
+    if (d.error) throw new Error(d.error);
+  } catch (e) {
+    $('#sheet').innerHTML = `<h2>Change month</h2><p class="sub">${esc(e.message)}</p>`;
+    return;
+  }
+  $('#sheet').innerHTML = `
+    <h2>Change month</h2>
+    <p class="sub">Auto follows the calendar — currently ${esc(d.autoTab || 'no tab found')}.
+      Override it if the team's working ahead of the date; clearing it goes straight back to auto.</p>
+    <div class="pick" id="mo-pick">
+      <button data-tab="" aria-pressed="${!d.overrideTab}">Auto (calendar)</button>
+      ${d.monthTabs.map(t => `<button data-tab="${esc(t)}" aria-pressed="${t === d.overrideTab}">${esc(t)}</button>`).join('')}
+    </div>
+    <div class="err" id="err"></div>`;
+  $('#mo-pick').onclick = async ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    try {
+      await post('/api/programming/override', { email: me.email, tab: b.dataset.tab });
+      $('#dlg').close();
+      load();
+    } catch {}
+  };
+}
+
 function renderWorkout() {
   const p = state.data.programming;
   if (p.saturday) {
-    $('#pane-workout').innerHTML =
+    $('#pane-workout').innerHTML = monthBar(p) +
       `<div class="wk"><h2>Saturday</h2><div class="focus">Coach-led</div>
        <p class="row">Saturday strength is run by the Saturday coach and isn't programmed here. Combos are on the Combos tab.</p></div>`;
     return;
   }
   const w = p.workout;
-  const badge = p.confirmed
+  const badge = monthBar(p) + (p.confirmed
     ? `<span class="badge ok">${esc(p.weekLabel || '')} · confirmed${p.confirmedBy ? ' · ' + esc(p.confirmedBy) : ''}</span>`
-    : `<span class="badge no">${esc(p.weekLabel || 'Week unknown')} · not confirmed yet</span>`;
+    : `<span class="badge no">${esc(p.weekLabel || 'Week unknown')} · not confirmed yet</span>`);
   if (!w) { $('#pane-workout').innerHTML = badge + '<p class="empty">No workout block for this day.</p>'; return; }
   if (w.empty) {
     $('#pane-workout').innerHTML = badge +
