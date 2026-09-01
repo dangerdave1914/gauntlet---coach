@@ -86,12 +86,14 @@ const deleteRow = (sheet, tab, rowIndex) => rpc({ action: 'delete', sheet, tab, 
 
 /* ------------------------------------------------------- cache (no DB yet) */
 
-const cache = { curriculum: null, programming: null, notation: null, at: 0 };
+const cache = { curriculum: null, programming: null, notation: null, settings: null, at: 0 };
 const TTL_MS = 5 * 60 * 1000; // shortened from 15 — Kendall needs changes visible sooner.
 async function warm(force = false) {
   if (!force && cache.at && Date.now() - cache.at < TTL_MS) return;
+  const settings = await loadSettings();
+  cache.settings = settings;
   const [curr, prog, news, staff, sched, changes] = await Promise.all([
-    loadCurriculum(), loadProgramming(), loadAnnouncements(),
+    loadCurriculum(), loadProgramming(settings), loadAnnouncements(),
     loadStaff(), loadSchedule(), loadChanges(),
   ]);
   cache.news = news; cache.staff = staff; cache.schedule = sched; cache.changes = changes;
@@ -384,16 +386,57 @@ function tokenize(combo, notation) {
     }));
 }
 
+/* -------------------------------------------------- app settings (Key/Value) */
+
+const SETTINGS_TAB = 'Settings';
+const ACTIVE_TAB_KEY = 'ActiveMonthTab';
+
+/** Small Key/Value store on the Programming sheet. Empty until first write —
+ *  that's not an error, it just means nothing's been overridden yet. */
+async function loadSettings() {
+  try {
+    const rows = await grid(PROGRAMMING, SETTINGS_TAB);
+    const map = {};
+    rows.slice(1).forEach(r => { if (r[0]) map[String(r[0]).trim()] = String(r[1] || '').trim(); });
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+/** Updates a key in place if the row exists, otherwise appends it (which also
+ *  creates the tab with headers the first time, via Code.gs's LOGS map). */
+async function writeSetting(key, value) {
+  let rows = [];
+  try { rows = await grid(PROGRAMMING, SETTINGS_TAB); } catch { /* tab doesn't exist yet */ }
+  const idx = rows.findIndex((r, i) => i > 0 && String(r[0]).trim() === key);
+  if (idx > 0) await updateRange(PROGRAMMING, SETTINGS_TAB, `B${idx + 1}`, [[value]]);
+  else await appendRow(PROGRAMMING, SETTINGS_TAB, [key, value]);
+}
+
 /* ------------------------------------------------- programming (workouts) */
 
 const PLACEHOLDER = /^(?:exercise\s*\d*\s*:?\s*)+$/i;
 const isBlank = v => !v || !v.trim() || PLACEHOLDER.test(v.trim());
 
-async function loadProgramming() {
+/**
+ * Which Programming tab is "live". Defaults to whichever tab starts with the
+ * current calendar month — so it resets itself automatically on rollover,
+ * with zero upkeep. A scheduler can override that via ActiveMonthTab in the
+ * Settings tab (set through the app, not by hand) when the team is working
+ * ahead of the calendar; clearing the override goes straight back to auto.
+ */
+async function loadProgramming(settings = {}) {
   const tabs = await tabNames(PROGRAMMING);
-  const month = MONTHS[new Date().getMonth()];
-  const tab = tabs.find(t => new RegExp(`^${month}`, 'i').test(t.trim()));
-  if (!tab) return { month, tab: null, weeks: [] };
+  const calendarMonth = MONTHS[new Date().getMonth()];
+  const autoTab = tabs.find(t => new RegExp(`^${calendarMonth}`, 'i').test(t.trim()));
+  const monthTabs = tabs.filter(t => MONTHS.some(m => new RegExp(`^${m}`, 'i').test(t.trim())));
+
+  const requestedOverride = (settings[ACTIVE_TAB_KEY] || '').trim();
+  const overrideTab = requestedOverride && tabs.includes(requestedOverride) ? requestedOverride : null;
+  const tab = overrideTab || autoTab;
+
+  if (!tab) return { month: calendarMonth, tab: null, weeks: [], monthTabs, autoTab, overrideTab };
 
   const rows = await grid(PROGRAMMING, tab);
   const weeks = [];
@@ -426,7 +469,7 @@ async function loadProgramming() {
     }
   });
 
-  return { month, tab, weeks };
+  return { month: calendarMonth, tab, weeks, monthTabs, autoTab, overrideTab };
 }
 
 /** Which week block is live. A confirmation wins; otherwise best guess, flagged. */
@@ -504,6 +547,8 @@ app.get('/api/day', async (req, res) => {
       })),
       programming: {
         month: prog.month,
+        activeTab: prog.tab,
+        overridden: !!prog.overrideTab,
         weekLabel: week ? week.label : null,
         confirmed, confirmedBy: by,
         saturday,
@@ -569,6 +614,47 @@ app.post('/api/week/confirm', async (req, res) => {
 
     await warm(true);
     res.json({ ok: true, weekLabel: week.label, stamp });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ------------------------------------------------ month-tab override ---- */
+
+/** What the picker needs: every candidate month tab, which one the calendar
+ *  would pick on its own, and which one (if any) is currently forced. */
+app.get('/api/programming/status', async (req, res) => {
+  try {
+    await warm();
+    const prog = cache.programming;
+    res.json({
+      activeTab: prog.tab,
+      autoTab: prog.autoTab,
+      overrideTab: prog.overrideTab,
+      monthTabs: prog.monthTabs,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** Body: { email, tab }. Empty/omitted tab clears the override and goes
+ *  back to the calendar automatically — same as just waiting it out. */
+app.post('/api/programming/override', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').toLowerCase().trim();
+    if (!SCHEDULERS.includes(email)) return res.status(403).json({ error: 'Not on the schedulers list.' });
+
+    const tab = String(req.body.tab || '').trim();
+    if (tab) {
+      const tabs = await tabNames(PROGRAMMING);
+      if (!tabs.includes(tab)) return res.status(400).json({ error: 'No tab named ' + tab });
+    }
+    await writeSetting(ACTIVE_TAB_KEY, tab);
+
+    await warm(true);
+    res.json({ ok: true, activeTab: cache.programming.tab, overrideTab: cache.programming.overrideTab });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
