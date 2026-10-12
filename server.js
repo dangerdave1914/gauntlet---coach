@@ -473,18 +473,16 @@ async function loadProgramming(settings = {}) {
 }
 
 /** Which week block is live. A confirmation wins; otherwise best guess, flagged. */
-function pickWeek(prog, today = new Date()) {
-  if (!prog.weeks.length) return { week: null, confirmed: false, by: null };
-
-  const confirmed = prog.weeks.filter(w => {
-    const s = cell(w.sections['Status'] || [], 1);
-    return /^confirmed/i.test(s);
-  });
-  if (confirmed.length) {
-    const w = confirmed[confirmed.length - 1];
-    const s = cell(w.sections['Status'], 1);
-    return { week: w, confirmed: true, by: s.replace(/^confirmed\s*(by)?\s*/i, '') };
-  }
+function pickWeek(weeks, t) {
+  if (!weeks.length) return null;
+  const status = w => cell(w.sections["status"], 1).toLowerCase();
+  const ready = weeks.find(w => status(w).startsWith("ready"));
+  if (ready) return ready;
+  const firstDay = new Date(Date.UTC(t.year, t.month, 1)).getUTCDay();
+  const firstMonday = 1 + ((8 - firstDay) % 7 || 7) % 7;
+  const n = Math.max(1, Math.floor((t.date - firstMonday) / 7) + 1);
+  return weeks.find(w => w.number === n) || weeks[Math.min(n - 1, weeks.length - 1)];
+}
 
   // Fallback: which Monday-week of the month are we in. Anchor on the first
   // Monday, not the 1st — a month starting Sat/Sun would otherwise count that
