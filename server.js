@@ -472,16 +472,24 @@ async function loadProgramming(settings = {}) {
   return { month: calendarMonth, tab, weeks, monthTabs, autoTab, overrideTab };
 }
 
-/** Which week block is live. A confirmation wins; otherwise best guess, flagged. */
-function pickWeek(weeks, t) {
-  if (!weeks.length) return null;
-  const status = w => cell(w.sections["status"], 1).toLowerCase();
-  const ready = weeks.find(w => status(w).startsWith("ready"));
-  if (ready) return ready;
-  const firstDay = new Date(Date.UTC(t.year, t.month, 1)).getUTCDay();
-  const firstMonday = 1 + ((8 - firstDay) % 7 || 7) % 7;
-  const n = Math.max(1, Math.floor((t.date - firstMonday) / 7) + 1);
-  return weeks.find(w => w.number === n) || weeks[Math.min(n - 1, weeks.length - 1)];
+/** Which week block is live: the first one with any day still marked Ready.
+ *  Falls back to the calendar guess if nothing is Ready. */
+function pickWeek(prog) {
+  if (!prog || !prog.weeks.length) return { week: null, confirmed: false, by: null };
+
+  const isReady = w => {
+    const key = Object.keys(w.sections).find(k => /^status$/i.test(k));
+    return key && w.sections[key].slice(1).some(v => /^ready/i.test(String(v || '').trim()));
+  };
+  const ready = prog.weeks.find(isReady);
+  if (ready) return { week: ready, confirmed: true, by: null };
+
+  const today = new Date();
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const firstMonday = 1 + ((8 - first.getDay()) % 7 || 7) % 7;
+  const n = Math.max(1, Math.floor((today.getDate() - firstMonday) / 7) + 1);
+  const week = prog.weeks.find(w => w.number === n) || prog.weeks[Math.min(n - 1, prog.weeks.length - 1)];
+  return { week, confirmed: false, by: null };
 }
 
   // Fallback: which Monday-week of the month are we in. Anchor on the first
