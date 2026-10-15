@@ -105,6 +105,25 @@ section{flex:none;width:100%;scroll-snap-align:start;overflow-y:auto;padding:14p
 .badge.no{background:rgba(242,180,65,.16);color:var(--warn)}
 .note{border-left:2px solid var(--warn);background:rgba(242,180,65,.08);padding:10px 12px;border-radius:0 6px 6px 0;font-size:14px}
 
+/* ---- tv screen check ---- */
+.scr{border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:12px;overflow:hidden}
+.scr.bad{border-color:var(--warn)}
+.scr-head{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;color:var(--white);padding:12px 14px;cursor:pointer;text-align:left;font:inherit}
+.scr-dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--chalk)}
+.scr.good .scr-dot{background:#3DD68C}
+.scr.bad .scr-dot{background:var(--warn)}
+.scr-title{font:600 15px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
+.scr-sum{font-size:13px;color:var(--chalk);margin-left:auto;text-align:right}
+.scr.bad .scr-sum{color:var(--warn)}
+.scr-body{padding:0 14px 14px}
+.scr-check{display:flex;gap:8px;font-size:14px;padding:7px 0;border-top:1px solid var(--line)}
+.scr-check b{flex:none;width:84px;color:var(--chalk);font-weight:500}
+.scr-check.no span{color:var(--warn)}
+.scr-frame{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;margin:10px 0}
+.scr-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.scr-acts{display:flex;gap:7px;flex-wrap:wrap}
+.scr-acts a,.scr-acts button{flex:1;text-align:center;text-decoration:none;border:1px solid var(--line);background:transparent;color:var(--white);border-radius:8px;padding:9px 10px;font:600 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.07em;cursor:pointer}
+
 /* ---- announcements ---- */
 .banner{
   border-left:3px solid var(--blue);background:rgba(61,139,255,.12);
@@ -384,6 +403,7 @@ async function load() {
     $('#stamp').textContent = '';
     $('#pane-workout').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
     $('#pane-news').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
+    loadScreen();   // the TV reads the sheet through its own route, so check it anyway
     return;
   }
   state.data = d;
@@ -391,7 +411,7 @@ async function load() {
   const synced = new Date(d.updatedAt);
   $('#stamp').innerHTML = `${esc(d.weekTitle || '')}<br>${
     isNaN(synced) ? '' : 'Synced ' + synced.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}`;
-  renderTowers(); renderWorkout();
+  renderTowers(); renderWorkout(); loadScreen();
 }
 
 function renderTowers() {
@@ -510,6 +530,66 @@ function renderWorkout() {
     ${w.notes && w.notes.trim() ? `<div class="row"><h3>From the coaches</h3><div class="note">${esc(w.notes)}</div></div>` : ''}
   </div>`;
 }
+
+/* ---------- TV screen check ---------- */
+
+/* What the lobby TV will show for the selected day, checked before class.
+ * The server asks the TV Worker itself, so this can't disagree with the screen.
+ * Opens on its own when something's wrong; stays a one-line green bar when not. */
+const tv = { open: false, data: null };
+
+async function loadScreen(fresh) {
+  const day = state.day;
+  const pane = $('#pane-workout');
+  let box = $('#scr');
+  if (!box) { box = document.createElement('div'); box.id = 'scr'; }
+  pane.insertBefore(box, pane.firstChild);
+  box.className = 'scr';
+  box.innerHTML = `<button class="scr-head"><i class="scr-dot"></i>
+    <span class="scr-title">TV screen</span><span class="scr-sum">Checking…</span></button>`;
+
+  let d;
+  try {
+    const r = await fetch(`/api/screens?day=${encodeURIComponent(day)}${fresh ? '&fresh=1' : ''}`);
+    d = await r.json();
+    if (d.error) throw new Error(d.error);
+  } catch (e) {
+    d = { ok: false, embed: '', windows: [], links: {},
+          checks: [{ ok: false, label: 'Check', detail: 'Could not run the screen check: ' + e.message }] };
+  }
+  if (day !== state.day) return;          // they tapped another day while this was loading
+  tv.data = d;
+  if (!d.ok) tv.open = true;
+  renderScreen();
+}
+
+function renderScreen() {
+  const box = $('#scr'), d = tv.data;
+  if (!box || !d) return;
+  const page = (String(d.embed || '').match(/#(\d+)/) || [])[1];
+  const times = (d.windows || []).map(w => w.start).join(', ');
+  const sum = d.ok ? ['Ready', page ? 'page ' + page : '', times].filter(Boolean).join(' · ')
+                   : 'Needs attention';
+  box.className = 'scr ' + (d.ok ? 'good' : 'bad');
+  box.innerHTML = `<button class="scr-head" id="scr-toggle" aria-expanded="${tv.open}">
+      <i class="scr-dot"></i><span class="scr-title">TV screen</span>
+      <span class="scr-sum">${esc(sum)}</span></button>` +
+    (tv.open ? `<div class="scr-body">
+      ${(d.checks || []).map(c => `<div class="scr-check ${c.ok ? '' : 'no'}">
+        <b>${esc(c.label)}</b><span>${esc(c.detail)}</span></div>`).join('')}
+      ${d.embed ? `<div class="scr-frame"><iframe src="${esc(d.embed)}" title="TV preview"
+        loading="lazy" allow="fullscreen"></iframe></div>` : ''}
+      <div class="scr-acts">
+        ${d.links && d.links.test ? `<a href="${esc(d.links.test)}" target="_blank" rel="noopener">Open TV view</a>` : ''}
+        ${d.links && d.links.lobby ? `<a href="${esc(d.links.lobby)}" target="_blank" rel="noopener">Lobby</a>` : ''}
+        <button id="scr-recheck">Recheck</button>
+      </div></div>` : '');
+}
+
+$('#pane-workout').addEventListener('click', e => {
+  if (e.target.closest('#scr-toggle')) { tv.open = !tv.open; renderScreen(); }
+  else if (e.target.closest('#scr-recheck')) loadScreen(true);
+});
 
 function renderNews() {
   const list = (state.data && state.data.announcements) || [];
