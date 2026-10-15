@@ -11,6 +11,8 @@
  *   CONFIRMERS           who can confirm a week's programming rollout
  *   ANNOUNCERS           who can post announcements (defaults to CONFIRMERS)
  *   SCHEDULERS           who can build the schedule and assign coaches
+ *   TV_URL               (optional) the lobby TV Worker. Defaults to
+ *                        https://gauntlet-bingo.dangerdave1914.workers.dev
  *   PORT                 (App Platform sets this automatically)
  */
 
@@ -23,6 +25,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const SCRIPT_SECRET = process.env.APPS_SCRIPT_SECRET;
+const TV_URL = (process.env.TV_URL || 'https://gauntlet-bingo.dangerdave1914.workers.dev').replace(/\/+$/, '');
 const CURRICULUM = 'curriculum';
 const PROGRAMMING = 'programming';
 const emails = v => (v || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -484,17 +487,10 @@ function pickWeek(prog) {
   const ready = prog.weeks.find(isReady);
   if (ready) return { week: ready, confirmed: true, by: null };
 
-  const today = new Date();
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  const firstMonday = 1 + ((8 - first.getDay()) % 7 || 7) % 7;
-  const n = Math.max(1, Math.floor((today.getDate() - firstMonday) / 7) + 1);
-  const week = prog.weeks.find(w => w.number === n) || prog.weeks[Math.min(n - 1, prog.weeks.length - 1)];
-  return { week, confirmed: false, by: null };
-}
-
   // Fallback: which Monday-week of the month are we in. Anchor on the first
   // Monday, not the 1st — a month starting Sat/Sun would otherwise count that
   // stray weekend as week 1 and shift every block forward by one.
+  const today = new Date();
   const first = new Date(today.getFullYear(), today.getMonth(), 1);
   const firstMonday = 1 + ((8 - first.getDay()) % 7 || 7) % 7;
   const n = Math.max(1, Math.floor((today.getDate() - firstMonday) / 7) + 1);
@@ -624,6 +620,112 @@ app.post('/api/week/confirm', async (req, res) => {
     console.error(e);
     res.status(500).json({ error: e.message });
   }
+});
+
+/* ------------------------------------------------------- TV screen check */
+
+/**
+ * Asks the lobby TV Worker what it will show on a given day. Deliberately not
+ * worked out here: this app has its own pickWeek, and a preview that computes
+ * its own answer can say "fine" while the TV does something else. Asking the
+ * Worker means the preview and the screen can never disagree.
+ *
+ * Then checks, in plain words, every way the screen has failed so far:
+ * no month tab, no week, a day column that went missing, an empty link, a
+ * link that couldn't be turned into a viewer, and a design that isn't shared.
+ */
+const TV_CACHE = new Map();           // day -> { at, body }
+const TV_TTL_MS = 60 * 1000;
+const SHARE_CACHE = new Map();        // embed base -> { at, public }
+const SHARE_TTL_MS = 10 * 60 * 1000;
+
+const fmtMin = m => {
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+  return `${((h + 11) % 12) + 1}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+};
+
+/** Canva sends a private design's viewer to a log-in page. A shared one loads. */
+async function canvaIsPublic(embed) {
+  const base = String(embed || '').split('#')[0];
+  if (!base) return null;
+  const hit = SHARE_CACHE.get(base);
+  if (hit && Date.now() - hit.at < SHARE_TTL_MS) return hit.public;
+  let result = null;   // null = couldn't tell
+  try {
+    const r = await fetch(base, { redirect: 'follow', signal: AbortSignal.timeout(8000) });
+    if (/\/login|\/signup/i.test(r.url) || r.status === 401 || r.status === 403 || r.status === 404) result = false;
+    else if (r.ok) result = true;
+  } catch { /* network hiccup — leave as unknown rather than raise a false alarm */ }
+  SHARE_CACHE.set(base, { at: Date.now(), public: result });
+  return result;
+}
+
+app.get('/api/screens', async (req, res) => {
+  const day = DAYS.includes(req.query.day) ? req.query.day : null;
+  const key = day || 'today';
+  const hit = TV_CACHE.get(key);
+  if (!req.query.fresh && hit && Date.now() - hit.at < TV_TTL_MS) return res.json(hit.body);
+
+  const q = day ? `?day=${encodeURIComponent(day)}` : '';
+  const links = {
+    lobby: `${TV_URL}/tv`,
+    test: `${TV_URL}/tv?workout=1${day ? '&day=' + encodeURIComponent(day) : ''}`,
+    data: `${TV_URL}/tv-data${q}`,
+  };
+
+  let tv;
+  try {
+    const r = await fetch(`${TV_URL}/tv-data${q}`, { signal: AbortSignal.timeout(15000) });
+    tv = await r.json();
+  } catch (e) {
+    return res.json({
+      day: day || null, ok: false, links,
+      checks: [{ ok: false, label: 'TV Worker', detail: 'Could not reach the TV Worker: ' + e.message }],
+    });
+  }
+
+  const checks = [];
+  const add = (ok, label, detail) => checks.push({ ok, label, detail });
+  const weekend = tv.tab === 'Weekend';
+  const windows = (tv.windows || []).map(w => ({ start: fmtMin(w[0]), end: fmtMin(w[1]) }));
+
+  if (tv.error) {
+    add(false, 'Sheet', 'The TV could not read the programming sheet: ' + tv.error);
+  } else {
+    add(!!tv.tab, 'Tab', tv.tab ? tv.tab : 'No tab for this month in the programming sheet.');
+    if (tv.tab && !weekend) {
+      add(!!tv.week, 'Week', tv.week || 'No week block found in ' + tv.tab + '.');
+    }
+    if (tv.tab && (weekend || tv.week)) {
+      add(!!tv.link, 'Link', tv.link ||
+        (weekend
+          ? `No Canva link for ${tv.day} in the Weekend tab.`
+          : `No TV Link for ${tv.day} in ${tv.week}. If the cell has a link, the ${tv.day} header in that week's day row has probably been moved or deleted.`));
+    }
+    if (tv.link) {
+      add(!!tv.embed, 'Viewer', tv.embed ? 'Built' + (/#(\d+)/.test(tv.embed) ? ', opens on page ' + tv.embed.match(/#(\d+)/)[1] : '') :
+        'The link is there but could not be turned into a viewer. Paste the plain Canva share link, not a smart chip or embed code.');
+    }
+    if (tv.embed) {
+      const pub = await canvaIsPublic(tv.embed);
+      add(pub !== false, 'Sharing',
+        pub === true ? 'Public' :
+        pub === false ? 'The design is not shared. In Canva: Share > Anyone with the link > Can view.' :
+        'Could not confirm. Check the preview below.');
+    }
+    add(windows.length > 0, 'Class times',
+      windows.length ? windows.map(w => w.start).join(', ')
+        : `No class windows for ${tv.day}, so the workout never takes over the screen.`);
+  }
+
+  const body = {
+    day: tv.day || day, tab: tv.tab || null, week: tv.week || null,
+    embed: tv.embed || '', windows, links, checks,
+    ok: checks.every(c => c.ok),
+    checkedAt: new Date().toISOString(),
+  };
+  TV_CACHE.set(key, { at: Date.now(), body });
+  res.json(body);
 });
 
 /* ------------------------------------------------ month-tab override ---- */
