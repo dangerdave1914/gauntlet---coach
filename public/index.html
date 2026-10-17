@@ -278,36 +278,61 @@ input[type=email]{
   <span class="intro-skip">Tap to skip</span>
 </div>
 <script>
-/* Brand intro, once per day per phone. The app loads underneath while it
- * plays, so it costs no time. Anything that stops it from playing (Low Power
- * Mode blocks autoplay on iPhone, a slow connection, a missing file) just
- * skips it: it never holds the app up. It only counts as seen once it
- * actually starts, so a blocked attempt tries again next open. */
+/* Brand intro, every time the app opens. Tap anywhere to skip straight in.
+ * The app loads underneath while it plays, so it costs no time. Anything that
+ * stops it from playing (Low Power Mode blocks autoplay on iPhone, a slow
+ * connection, a missing file) just skips it: it never holds the app up.
+ *
+ * Add ?intro=1 to the address to force it any time, for testing. In that
+ * mode it never skips silently: if the phone blocks autoplay it says so and
+ * waits for a tap, and if the video file is missing it says that too. */
 (function () {
   var el = document.getElementById('intro'), v = document.getElementById('intro-v');
-  var d = new Date(), today = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-  var seen; try { seen = localStorage.getItem('gauntlet-intro') === today; } catch (e) { seen = true; }
+  var hint = el.querySelector('.intro-skip');
+  var force = /[?&]intro=1\b/.test(location.search);
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   var resolve; window.introDone = new Promise(function (r) { resolve = r; });
-  if (seen || reduce) { el.remove(); resolve(); return; }
+  if (!force && reduce) { el.remove(); resolve(); return; }   // the phone asked for less motion
 
-  var finished = false;
+  var finished = false, started = false;
   function done() {
     if (finished) return; finished = true;
     el.classList.add('out');
     setTimeout(function () { el.remove(); }, 450);
     resolve();
   }
+  function stuck(msg) {               // test mode only: explain instead of vanishing
+    hint.textContent = msg; hint.style.color = '#F2B441';
+  }
   v.addEventListener('playing', function () {
-    try { localStorage.setItem('gauntlet-intro', today); } catch (e) {}
+    started = true;
+    hint.textContent = 'Tap to skip'; hint.style.color = '';
+    setTimeout(done, 7000);                                   // hard cap once it's running
   }, { once: true });
   v.addEventListener('ended', done);
-  v.addEventListener('error', done);
-  el.addEventListener('click', done);
-  setTimeout(function () { if (v.paused) done(); }, 2500);   // never got going
-  setTimeout(done, 7000);                                     // hard cap
+  v.addEventListener('error', function () {
+    if (force) stuck('Video file not found — is intro.mp4 in the public folder? Tap to close');
+    else done();
+  });
+  el.addEventListener('click', function () {
+    if (force && !started && !finished && v.paused && !v.error) {
+      var q = v.play(); if (q && q.catch) q.catch(function () {});   // a tap is allowed to start it
+      return;
+    }
+    done();
+  });
+  if (!force) {
+    setTimeout(function () { if (v.paused) done(); }, 2500);   // never got going
+    setTimeout(done, 7000);
+  }
   v.src = '/intro.mp4?v=2';   // bump when the video changes, so phones don't replay a cached old one
-  var p = v.play(); if (p && p.catch) p.catch(done);
+  var p = v.play();
+  if (p && p.catch) p.catch(function () {
+    if (force) stuck(reduce
+      ? 'Reduce Motion is on, and autoplay was blocked. Tap to play'
+      : 'This phone blocked autoplay (Low Power Mode?). Tap to play');
+    else done();
+  });
 })();
 </script>
 
