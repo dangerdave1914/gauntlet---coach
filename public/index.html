@@ -263,10 +263,54 @@ input[type=email]{
   background:var(--card);color:var(--white);font-size:15px;margin:10px 0;
 }
 .err{color:var(--warn);font-size:13px;margin-top:8px}
+/* ---- once-a-day intro ---- */
+#intro{position:fixed;inset:0;z-index:1000;background:#000;display:flex;align-items:center;justify-content:center;transition:opacity .45s ease}
+#intro.out{opacity:0;pointer-events:none}
+#intro video{width:100%;height:100%;object-fit:cover}
+@media (min-aspect-ratio:3/4){#intro video{object-fit:contain}}
+.intro-skip{position:absolute;bottom:calc(env(safe-area-inset-bottom) + 18px);left:0;right:0;text-align:center;font:600 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.12em;color:rgba(255,255,255,.55)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
+
+<div id="intro" aria-hidden="true">
+  <video id="intro-v" muted playsinline preload="auto"></video>
+  <span class="intro-skip">Tap to skip</span>
+</div>
+<script>
+/* Brand intro, once per day per phone. The app loads underneath while it
+ * plays, so it costs no time. Anything that stops it from playing (Low Power
+ * Mode blocks autoplay on iPhone, a slow connection, a missing file) just
+ * skips it: it never holds the app up. It only counts as seen once it
+ * actually starts, so a blocked attempt tries again next open. */
+(function () {
+  var el = document.getElementById('intro'), v = document.getElementById('intro-v');
+  var d = new Date(), today = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+  var seen; try { seen = localStorage.getItem('gauntlet-intro') === today; } catch (e) { seen = true; }
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var resolve; window.introDone = new Promise(function (r) { resolve = r; });
+  if (seen || reduce) { el.remove(); resolve(); return; }
+
+  var finished = false;
+  function done() {
+    if (finished) return; finished = true;
+    el.classList.add('out');
+    setTimeout(function () { el.remove(); }, 450);
+    resolve();
+  }
+  v.addEventListener('playing', function () {
+    try { localStorage.setItem('gauntlet-intro', today); } catch (e) {}
+  }, { once: true });
+  v.addEventListener('ended', done);
+  v.addEventListener('error', done);
+  el.addEventListener('click', done);
+  setTimeout(function () { if (v.paused) done(); }, 2500);   // never got going
+  setTimeout(done, 7000);                                     // hard cap
+  v.src = '/intro.mp4';
+  var p = v.play(); if (p && p.catch) p.catch(done);
+})();
+</script>
 
 <header>
   <div class="brand">
@@ -384,6 +428,7 @@ async function load() {
   document.querySelectorAll('.day').forEach(b =>
     b.setAttribute('aria-pressed', b.dataset.day === state.day));
   $('#towers').innerHTML = '<p class="empty">Loading…</p>';
+  loadScreen();   // runs alongside the day's data instead of waiting for it
   let d;
   try {
     const r = await fetch(`/api/day?day=${state.day}`);
@@ -403,7 +448,7 @@ async function load() {
     $('#stamp').textContent = '';
     $('#pane-workout').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
     $('#pane-news').innerHTML = '<p class="empty">Unavailable while the sheet connection is down.</p>';
-    loadScreen();   // the TV reads the sheet through its own route, so check it anyway
+    screenBox();    // the TV reads the sheet through its own route, so its check still stands
     return;
   }
   state.data = d;
@@ -411,7 +456,7 @@ async function load() {
   const synced = new Date(d.updatedAt);
   $('#stamp').innerHTML = `${esc(d.weekTitle || '')}<br>${
     isNaN(synced) ? '' : 'Synced ' + synced.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}`;
-  renderTowers(); renderWorkout(); loadScreen();
+  renderTowers(); renderWorkout(); screenBox();
 }
 
 function renderTowers() {
@@ -536,14 +581,20 @@ function renderWorkout() {
 /* What the lobby TV will show for the selected day, checked before class.
  * The server asks the TV Worker itself, so this can't disagree with the screen.
  * Opens on its own when something's wrong; stays a one-line green bar when not. */
-const tv = { open: false, data: null };
+const tv = { open: false, data: null, box: null };
+
+/* The bar is one element that survives re-renders of the Workout pane, so the
+ * check can start before the workout has loaded and land wherever it ends up. */
+function screenBox() {
+  if (!tv.box) { tv.box = document.createElement('div'); tv.box.id = 'scr'; }
+  const pane = $('#pane-workout');
+  if (pane.firstChild !== tv.box) pane.insertBefore(tv.box, pane.firstChild);
+  return tv.box;
+}
 
 async function loadScreen(fresh) {
   const day = state.day;
-  const pane = $('#pane-workout');
-  let box = $('#scr');
-  if (!box) { box = document.createElement('div'); box.id = 'scr'; }
-  pane.insertBefore(box, pane.firstChild);
+  const box = screenBox();
   box.className = 'scr';
   box.innerHTML = `<button class="scr-head"><i class="scr-dot"></i>
     <span class="scr-title">TV screen</span><span class="scr-sum">Checking…</span></button>`;
@@ -564,8 +615,9 @@ async function loadScreen(fresh) {
 }
 
 function renderScreen() {
-  const box = $('#scr'), d = tv.data;
-  if (!box || !d) return;
+  const d = tv.data;
+  if (!d) return;
+  const box = screenBox();
   const page = (String(d.embed || '').match(/#(\d+)/) || [])[1];
   const times = (d.windows || []).map(w => w.start).join(', ');
   const sum = d.ok ? ['Ready', page ? 'page ' + page : '', times].filter(Boolean).join(' · ')
@@ -642,7 +694,8 @@ async function bootIdentity() {
 }
 
 /** First run only. Everything after this is silent. */
-function intake() {
+async function intake() {
+  await window.introDone;   // don't pop the sign-up over the intro
   $('#dlg').showModal();
   $('#sheet').innerHTML = `
     <h2>Welcome to Gauntlet Coach</h2>
