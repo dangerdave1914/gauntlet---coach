@@ -266,8 +266,7 @@ input[type=email]{
 /* ---- once-a-day intro ---- */
 #intro{position:fixed;inset:0;z-index:1000;background:#000;display:flex;align-items:center;justify-content:center;transition:opacity .45s ease}
 #intro.out{opacity:0;pointer-events:none}
-#intro video{width:100%;height:100%;object-fit:cover}
-@media (min-aspect-ratio:3/4){#intro video{object-fit:contain}}
+#intro video{width:100%;height:100%;object-fit:contain}   /* whole frame on every screen; its edges fade to black */
 .intro-skip{position:absolute;bottom:calc(env(safe-area-inset-bottom) + 18px);left:0;right:0;text-align:center;font:600 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.12em;color:rgba(255,255,255,.55)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
@@ -307,7 +306,7 @@ input[type=email]{
   el.addEventListener('click', done);
   setTimeout(function () { if (v.paused) done(); }, 2500);   // never got going
   setTimeout(done, 7000);                                     // hard cap
-  v.src = '/intro.mp4';
+  v.src = '/intro.mp4?v=2';   // bump when the video changes, so phones don't replay a cached old one
   var p = v.play(); if (p && p.catch) p.catch(done);
 })();
 </script>
