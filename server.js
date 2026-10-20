@@ -520,6 +520,13 @@ function pickWeek(prog) {
     const key = Object.keys(w.sections).find(k => /^status$/i.test(k));
     return key && w.sections[key].slice(1).some(v => /^ready/i.test(String(v || '').trim()));
   };
+  // A week whose day headers carry today's date ("Monday 10/19") is live, full
+  // stop — a Ready left behind on last week's Friday can't hold it back.
+  const t = new Date(gymToday() + 'T12:00:00');
+  const md = `${t.getMonth() + 1}/${t.getDate()}`;
+  const dated = prog.weeks.find(w => Object.values(w.days).some(c => c.md === md));
+  if (dated) return { week: dated, confirmed: true, by: null };
+
   const ready = prog.weeks.find(isReady);
   if (ready) return { week: ready, confirmed: true, by: null };
 
