@@ -893,24 +893,64 @@ function renderWorkout() {
 
 /* ---------- TV screen check ---------- */
 
-/* What the lobby TV will show for the selected day, checked before class.
- * The server asks the TV Worker itself, so this can't disagree with the screen.
- * Opens on its own when something's wrong; stays a one-line green bar when not. */
+/* What the lobby TV will show for the selected date, in ANY week. Reads the TV
+ * Worker's own data (/tv-data?date=...), the same thing the screens read, so
+ * this can't disagree with the TV. Opens on its own when something's wrong;
+ * stays a one-line green bar when not. */
+const TV_BASE = 'https://gauntlet-bingo.dangerdave1914.workers.dev';
 const tv = { open: false, data: null, box: null };
 
 /* The bar is one element that survives re-renders of the Workout pane, so the
  * check can start before the workout has loaded and land wherever it ends up. */
 function screenBox() {
   if (!tv.box) { tv.box = document.createElement('div'); tv.box.id = 'scr'; }
-  if (!isThisWeek(state.date)) { tv.box.remove(); return tv.box; }
   const pane = $('#pane-workout');
   if (pane.firstChild !== tv.box) pane.insertBefore(tv.box, pane.firstChild);
   return tv.box;
 }
 
-async function loadScreen(fresh) {
-  const day = state.day;
-  if (!isThisWeek(state.date)) { if (tv.box) tv.box.remove(); return; }   // the TV only knows this week
+const clock = m => { const h = Math.floor(m / 60); return `${h % 12 || 12}:${String(m % 60).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`; };
+const shortDate = iso => { const d = new Date(iso + 'T12:00:00'); return `${d.getMonth() + 1}/${d.getDate()}`; };
+
+/** Turns the Worker's answer into the checks the bar shows. */
+function screenChecks(date, j) {
+  const md = shortDate(date);
+  const windows = (j.windows || []).map(w => ({ start: clock(w[0]), end: clock(w[1]) }));
+  const links = {
+    test: `${TV_BASE}/tv?workout=1&date=${date}`,
+    lobby: `${TV_BASE}/tv`,
+    week: `${TV_BASE}/tv-week?start=${mondayOf(date)}`,
+  };
+
+  if (j.error) return { ok: false, embed: '', windows: [], links, checks: [{
+    ok: false, label: 'Date',
+    detail: /nothing dated/i.test(j.error)
+      ? `Nothing in the programming sheet is dated ${md}. Add it to that day's header, like "${state.day} ${md}".`
+      : j.error }] };
+
+  // A weekend day with nothing set: no class, so the lobby slides are the right answer.
+  if (j.tab === 'Weekend' && !j.link && !windows.length) return {
+    ok: true, embed: '', windows: [], links, summary: 'No class · lobby slides',
+    checks: [{ ok: true, label: 'Screen', detail: 'Nothing set for this day in the Weekend tab, so the TV stays on the lobby slides.' }] };
+
+  const page = (String(j.embed || '').match(/#(\d+)/) || [])[1];
+  const checks = [
+    { ok: true, label: 'Source',
+      detail: j.tab === 'Weekend' ? 'Weekend tab'
+        : [j.tab, j.week, String(j.header || '').split('\n')[0]].filter(Boolean).join(' · ') },
+    { ok: !!j.link, label: 'TV Link',
+      detail: j.link ? 'Set' : 'Empty. Paste the Canva link as plain text, then a space and the page number.' },
+    { ok: !!j.embed, label: 'Canva',
+      detail: j.embed ? (page ? `Opens on page ${page}` : 'Opens on page 1 (no page number given)')
+        : j.link ? "That isn't a Canva share link the TV can open. Use the one ending in /view." : 'Nothing to show' },
+    { ok: windows.length > 0, label: 'Class times',
+      detail: windows.length ? windows.map(w => `${w.start}–${w.end}`).join(', ') : 'None set, so the workout never comes up' },
+  ];
+  return { ok: checks.every(c => c.ok), embed: j.embed || '', windows, links, checks };
+}
+
+async function loadScreen() {
+  const date = state.date;
   const box = screenBox();
   box.className = 'scr';
   box.innerHTML = `<button class="scr-head"><i class="scr-dot"></i>
@@ -918,14 +958,13 @@ async function loadScreen(fresh) {
 
   let d;
   try {
-    const r = await fetch(`/api/screens?day=${encodeURIComponent(day)}${fresh ? '&fresh=1' : ''}`);
-    d = await r.json();
-    if (d.error) throw new Error(d.error);
+    const r = await fetch(`${TV_BASE}/tv-data?date=${date}`, { cache: 'no-store' });
+    d = screenChecks(date, await r.json());
   } catch (e) {
     d = { ok: false, embed: '', windows: [], links: {},
-          checks: [{ ok: false, label: 'Check', detail: 'Could not run the screen check: ' + e.message }] };
+          checks: [{ ok: false, label: 'Check', detail: 'Could not reach the TV: ' + e.message }] };
   }
-  if (day !== state.day) return;          // they tapped another day while this was loading
+  if (date !== state.date) return;          // they tapped another day while this was loading
   tv.data = d;
   if (!d.ok) tv.open = true;
   renderScreen();
@@ -937,8 +976,8 @@ function renderScreen() {
   const box = screenBox();
   const page = (String(d.embed || '').match(/#(\d+)/) || [])[1];
   const times = (d.windows || []).map(w => w.start).join(', ');
-  const sum = d.ok ? ['Ready', page ? 'page ' + page : '', times].filter(Boolean).join(' · ')
-                   : 'Needs attention';
+  const sum = d.summary || (d.ok ? ['Ready', page ? 'page ' + page : '', times].filter(Boolean).join(' · ')
+                                 : 'Needs attention');
   box.className = 'scr ' + (d.ok ? 'good' : 'bad');
   box.innerHTML = `<button class="scr-head" id="scr-toggle" aria-expanded="${tv.open}">
       <i class="scr-dot"></i><span class="scr-title">TV screen</span>
@@ -950,6 +989,7 @@ function renderScreen() {
         loading="lazy" allow="fullscreen"></iframe></div>` : ''}
       <div class="scr-acts">
         ${d.links && d.links.test ? `<a href="${esc(d.links.test)}" target="_blank" rel="noopener">Open TV view</a>` : ''}
+        ${d.links && d.links.week ? `<a href="${esc(d.links.week)}" target="_blank" rel="noopener">Whole week</a>` : ''}
         ${d.links && d.links.lobby ? `<a href="${esc(d.links.lobby)}" target="_blank" rel="noopener">Lobby</a>` : ''}
         <button id="scr-recheck">Recheck</button>
       </div></div>` : '');
@@ -957,9 +997,9 @@ function renderScreen() {
 
 $('#pane-workout').addEventListener('click', e => {
   if (e.target.closest('#scr-toggle')) { tv.open = !tv.open; renderScreen(); }
-  else if (e.target.closest('#scr-recheck')) loadScreen(true);
+  else if (e.target.closest('#scr-recheck')) loadScreen();
 });
-
+  
 function renderNews() {
   const list = (state.data && state.data.announcements) || [];
 
