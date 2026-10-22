@@ -801,8 +801,8 @@ app.post('/api/week/confirm', async (req, res) => {
  * no month tab, no week, a day column that went missing, an empty link, a
  * link that couldn't be turned into a viewer, and a design that isn't shared.
  */
-const TV_CACHE = new Map();           // day -> { at, body }
-const TV_INFLIGHT = new Map();        // day -> promise, so two taps don't run two checks
+const TV_CACHE = new Map();           // date -> { at, body }
+const TV_INFLIGHT = new Map();        // date -> promise, so two taps don't run two checks
 const TV_FRESH_MS = 5 * 60 * 1000;    // a good result is served as-is for 5 minutes
 const TV_BAD_MS = 60 * 1000;          // a bad one is rechecked after a minute, so a fix shows quickly
 const TV_TIMEOUT_MS = 30 * 1000;      // the Worker reads the sheet through Apps Script; that can take a while
@@ -814,10 +814,9 @@ const fmtMin = m => {
   return `${((h + 11) % 12) + 1}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
 };
 
-/** Weekday name in the gym's time zone, `offset` days from today. */
-const gymDay = (offset = 0) => new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/Chicago', weekday: 'long',
-}).format(new Date(Date.now() + offset * 864e5));
+/** A date in the gym's time zone, `offset` days from today, as YYYY-MM-DD. */
+const gymDate = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' })
+  .format(new Date(Date.now() + offset * 864e5));
 
 /** Canva sends a private design's viewer to a log-in page. A shared one loads. */
 async function canvaIsPublic(embed) {
@@ -835,22 +834,29 @@ async function canvaIsPublic(embed) {
   return result;
 }
 
-/** The slow part: one full check of one day, straight from the Worker. */
-async function checkScreen(day) {
-  const q = `?day=${encodeURIComponent(day)}`;
+/**
+ * The slow part: one full check of one DATE, straight from the Worker.
+ * Asks by date, never by weekday name: the Worker treats ?day= as a test
+ * override that skips the dated headers, so it isn't what the TV really does.
+ */
+async function checkScreen(date) {
+  const d = new Date(date + 'T12:00:00');
+  const dayName = DAYS[d.getDay()];
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
   const links = {
     lobby: `${TV_URL}/tv`,
-    test: `${TV_URL}/tv?workout=1&day=${encodeURIComponent(day)}`,
-    data: `${TV_URL}/tv-data${q}`,
+    test: `${TV_URL}/tv?workout=1&date=${date}`,
+    week: `${TV_URL}/tv-week?start=${mondayOf(date)}`,
+    data: `${TV_URL}/tv-data?date=${date}`,
   };
 
   let tv;
   try {
-    const r = await fetch(`${TV_URL}/tv-data${q}`, { signal: AbortSignal.timeout(TV_TIMEOUT_MS) });
+    const r = await fetch(links.data, { signal: AbortSignal.timeout(TV_TIMEOUT_MS) });
     tv = await r.json();
   } catch (e) {
     return {
-      day, ok: false, unreachable: true, links, embed: '', windows: [],
+      date, day: dayName, ok: false, unreachable: true, links, embed: '', windows: [],
       checks: [{ ok: false, label: 'TV Worker', detail: /abort|timeout/i.test(e.message)
         ? 'The TV took too long to answer (it reads the sheet through Apps Script). Tap Recheck.'
         : 'Could not reach the TV Worker: ' + e.message }],
@@ -862,19 +868,28 @@ async function checkScreen(day) {
   const add = (ok, label, detail) => checks.push({ ok, label, detail });
   const weekend = tv.tab === 'Weekend';
   const windows = (tv.windows || []).map(w => ({ start: fmtMin(w[0]), end: fmtMin(w[1]) }));
+  let summary = '';
 
-  if (tv.error) {
+  if (tv.error && /nothing dated/i.test(tv.error)) {
+    add(false, 'Date', `Nothing in the programming sheet is dated ${md}. Add it to that day's header, like "${dayName} ${md}".`);
+  } else if (tv.error) {
     add(false, 'Sheet', 'The TV could not read the programming sheet: ' + tv.error);
+  } else if (weekend && !tv.link && !windows.length) {
+    // A weekend day with nothing set is a day off, not a fault: the lobby slides are right.
+    add(true, 'Screen', `Nothing set for ${dayName} in the Weekend tab, so the TV stays on the lobby slides.`);
+    summary = 'No class · lobby slides';
   } else {
     add(!!tv.tab, 'Tab', tv.tab ? tv.tab : 'No tab for this month in the programming sheet.');
     if (tv.tab && !weekend) {
-      add(!!tv.week, 'Week', tv.week || 'No week block found in ' + tv.tab + '.');
+      add(!!tv.week, 'Week', tv.week
+        ? tv.week + (tv.header ? ' · ' + String(tv.header).split('\n')[0] : '')
+        : 'No week block found in ' + tv.tab + '.');
     }
     if (tv.tab && (weekend || tv.week)) {
       add(!!tv.link, 'Link', tv.link ||
         (weekend
-          ? `No Canva link for ${tv.day} in the Weekend tab.`
-          : `No TV Link for ${tv.day} in ${tv.week}. If the cell has a link, the ${tv.day} header in that week's day row has probably been moved or deleted.`));
+          ? `No Canva link for ${dayName} in the Weekend tab.`
+          : `No TV Link for ${dayName} in ${tv.week}.`));
     }
     if (tv.link) {
       add(!!tv.embed, 'Viewer', tv.embed ? 'Built' + (/#(\d+)/.test(tv.embed) ? ', opens on page ' + tv.embed.match(/#(\d+)/)[1] : '') :
@@ -889,12 +904,12 @@ async function checkScreen(day) {
     }
     add(windows.length > 0, 'Class times',
       windows.length ? windows.map(w => w.start).join(', ')
-        : `No class windows for ${tv.day}, so the workout never takes over the screen.`);
+        : `No class windows for ${dayName}, so the workout never takes over the screen.`);
   }
 
   return {
-    day: tv.day || day, tab: tv.tab || null, week: tv.week || null,
-    embed: tv.embed || '', windows, links, checks,
+    date, day: dayName, tab: tv.tab || null, week: tv.week || null,
+    embed: tv.embed || '', windows, links, checks, summary,
     ok: checks.every(c => c.ok),
     checkedAt: new Date().toISOString(),
   };
@@ -902,12 +917,12 @@ async function checkScreen(day) {
 
 /** Runs a check once even if several people ask at the same moment, and
  *  keeps the result. A timeout isn't kept, so the next ask tries again. */
-function runCheck(day) {
-  if (TV_INFLIGHT.has(day)) return TV_INFLIGHT.get(day);
-  const p = checkScreen(day)
-    .then(body => { if (!body.unreachable) TV_CACHE.set(day, { at: Date.now(), body }); return body; })
-    .finally(() => TV_INFLIGHT.delete(day));
-  TV_INFLIGHT.set(day, p);
+function runCheck(date) {
+  if (TV_INFLIGHT.has(date)) return TV_INFLIGHT.get(date);
+  const p = checkScreen(date)
+    .then(body => { if (!body.unreachable) TV_CACHE.set(date, { at: Date.now(), body }); return body; })
+    .finally(() => TV_INFLIGHT.delete(date));
+  TV_INFLIGHT.set(date, p);
   return p;
 }
 
@@ -915,23 +930,33 @@ function runCheck(day) {
  * Answers from memory whenever it can, so the panel shows up instantly.
  * A result past its age is still shown, and refreshed in the background
  * for the next look. Recheck (?fresh=1) always waits for a real answer.
+ * ?date=YYYY-MM-DD picks any day in any week. Old ?day=Monday links still
+ * work and mean that weekday of this week.
  */
 app.get('/api/screens', async (req, res) => {
-  const day = DAYS.includes(req.query.day) ? req.query.day : gymDay();
-  const hit = TV_CACHE.get(day);
+  let date = ISO.test(req.query.date || '') ? req.query.date : null;
+  if (!date) {
+    date = gymToday();
+    if (DAYS.includes(req.query.day)) {
+      const m = new Date(mondayOf(date) + 'T12:00:00');
+      m.setDate(m.getDate() + ((DAYS.indexOf(req.query.day) + 6) % 7));
+      date = m.toISOString().slice(0, 10);
+    }
+  }
+  const hit = TV_CACHE.get(date);
   if (!req.query.fresh && hit) {
     const age = Date.now() - hit.at;
-    if (age > (hit.body.ok ? TV_FRESH_MS : TV_BAD_MS)) runCheck(day).catch(() => {});
+    if (age > (hit.body.ok ? TV_FRESH_MS : TV_BAD_MS)) runCheck(date).catch(() => {});
     return res.json(hit.body);
   }
-  try { res.json(await runCheck(day)); }
+  try { res.json(await runCheck(date)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* Keep today and tomorrow checked in the background, so the panel is already
  * answered before anyone opens the app — the two days a coach actually checks. */
 async function prefetchScreens() {
-  for (const d of [gymDay(0), gymDay(1)]) {
+  for (const d of [gymDate(0), gymDate(1)]) {
     try { await runCheck(d); } catch { /* next round */ }
   }
 }
