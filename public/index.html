@@ -213,6 +213,19 @@ section{flex:none;width:100%;scroll-snap-align:start;overflow-y:auto;padding:14p
 #big .combo{justify-content:center;gap:.2em .35em;text-align:center}
 #big .tok{font:700 var(--tok, 80px)/1.05 'Barlow Condensed',sans-serif;color:var(--tier);cursor:default;border:0;white-space:normal}
 #big .nav{display:flex;gap:10px}
+/* movement: stop-motion silhouette */
+#big.anim .stage{flex:none;max-height:20vh;min-height:64px}
+#big .clip{flex:1;min-height:0;align-self:center;max-width:100%;aspect-ratio:3/4;margin:10px 0 6px;border-radius:12px;
+  overflow:hidden;background:#F4F7FC;border:1px solid var(--line);position:relative}
+#big .clip[hidden]{display:none}
+#big .clip canvas{width:100%;height:100%;display:block}
+#big .clip .st{position:absolute;left:8px;top:8px;font:600 12px 'Barlow Condensed',sans-serif;letter-spacing:.1em;
+  text-transform:uppercase;background:rgba(5,7,11,.72);color:#fff;padding:3px 7px;border-radius:5px}
+#big .tok.has{cursor:pointer}
+#big .tok.cue{background:var(--tier);color:var(--tier-ink);border-radius:6px;padding:0 .12em}
+#big.tier-black .tok.cue{background:#fff;color:#05070B}
+#big .nav #big-watch[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
+.gloss .clipgo{cursor:pointer}
 #big .nav button{flex:1;padding:16px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--white);
   font:600 18px 'Barlow Condensed',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
 
@@ -507,10 +520,12 @@ input[type=email]{
 
 <dialog id="dlg"><div class="sheet" id="sheet"></div></dialog>
 
+<script src="/moves.js?v=1"></script>
 <div id="big" hidden>
   <div class="top"><span id="big-label"></span><button class="x" id="big-x" aria-label="Close">✕</button></div>
+  <div class="clip" id="big-clip" hidden><canvas id="big-cv" width="480" height="640"></canvas><span class="st" id="big-st"></span></div>
   <div class="stage" id="big-stage"></div>
-  <div class="nav"><button id="big-prev">‹ Tower</button><button id="big-next">Tower ›</button></div>
+  <div class="nav"><button id="big-prev">‹ Tower</button><button id="big-watch" aria-pressed="false" hidden>▶ Watch</button><button id="big-next">Tower ›</button></div>
 </div>
 
 <script>
@@ -754,15 +769,24 @@ function openBig() {
   const towers = d.towers.map((t, i) => ({ ...t, num: towerNum(t, i) }));
   const cur = towers.find(t => t.num === state.tower); if (!cur) return;
   const lines = cur[state.tier] || [];
+  stopClip(true);
+  loadSeq(lines);
   const big = $('#big');
   big.className = state.tier === 'BLACK' ? 'tier-black' : 'tier-blue';
   $('#big-label').innerHTML = `Tower <b>${state.tower}</b> · ${state.tier === 'BLUE' ? 'Blue' : 'Black'}`;
   $('#big-stage').innerHTML = lines.some(l => l.length)
-    ? `<div class="combo">${lines.map(line => line.map(tok => `<span class="tok">${esc(tok.text)}</span>`).join('') + '<i class="brk"></i>').join('')}</div>`
+    ? (() => { let k = 0; return `<div class="combo">${lines.map(line => line.map(tok => {
+        const i = k++, has = !!(player.seq[i] && player.seq[i].clip);
+        return `<span class="tok${has ? ' has' : ''}" data-i="${i}">${esc(tok.text)}</span>`;
+      }).join('') + '<i class="brk"></i>').join('')}</div>`; })()
     : `<p class="empty" style="font-size:22px">Nothing programmed for ${esc(cur.tower)} today.</p>`;
+  $('#big-watch').hidden = !player.seq.some(x => x.clip);
+  $('#big-watch').textContent = '▶ Watch';
+  const anim = player.seq.some(x => x.clip);
+  big.classList.toggle('anim', anim);
   big.hidden = false;
-  const stage = $('#big-stage');
-  fitText(stage, stage.querySelector('.combo'), 120, stage.clientHeight);
+  if (anim) { showStage(); startWatch(0); }       // the button opens the animation; the combo rides underneath as captions
+  else { const stage = $('#big-stage'); fitText(stage, stage.querySelector('.combo'), 120, stage.clientHeight); }
 }
 function stepBig(dir) {
   const towers = state.data.towers.map((t, i) => towerNum(t, i)).sort((a, b) => a - b);
@@ -770,12 +794,123 @@ function stepBig(dir) {
   state.tower = towers[(i + dir + towers.length) % towers.length];
   renderTowers(); openBig();
 }
-$('#big-x').addEventListener('click', () => { $('#big').hidden = true; });
+$('#big-x').addEventListener('click', () => { stopClip(true); $('#big').hidden = true; });
 $('#big-prev').addEventListener('click', () => stepBig(-1));
 $('#big-next').addEventListener('click', () => stepBig(1));
 
 window.addEventListener('resize', sizeRing);
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(sizeRing);   // re-fit once the condensed font arrives
+
+/* ---------- movement: stop-motion silhouettes ----------
+ * Every move is a strip of silhouette frames (public/moves/<slug>.webp, 12 fps),
+ * filmed orthodox and named by role. moves.js reads the combo's stance from its
+ * first jab or cross; southpaw plays mirrored. A combo plays as one continuous
+ * stop-motion reel: neutral bounce, move, neutral bounce, move... Every strip was
+ * aligned to the neutral stance when it was made, so the figure stays planted.
+ * The figure takes the tier colour: blue for BLUE, black for BLACK.
+ */
+const MV = window.GauntletMoves;
+const GAP = 4;                       // neutral frames between moves
+const player = { seq: [], reel: [], f: 0, on: false, stance: 'orthodox', i: -1, raf: 0, last: 0 };
+const sprites = {};                  // slug -> Promise<Image>
+let MAN = null;
+const manifest = fetch('/moves/index.json?v=1').then(r => r.json()).then(m => (MAN = m)).catch(() => null);
+function sprite(slug) {
+  if (!sprites[slug]) sprites[slug] = new Promise(res => {
+    const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null);
+    im.src = `/moves/${slug}.webp?v=1`;
+  });
+  return sprites[slug];
+}
+function loadSeq(lines) {
+  const toks = lines.flat().map(t => t.text);
+  player.stance = MV ? MV.stanceOf(toks) : 'orthodox';
+  player.seq = toks.map(text => ({ text, clip: MV ? MV.resolve(text, player.stance) : null }));
+  player.f = 0; player.i = -1; player.reel = [];
+}
+/** Lay the combo out as one list of frames: [neutral × GAP, move, neutral × GAP, move, …] */
+async function buildReel() {
+  const m = MAN || await manifest; if (!m) return;
+  const mirror = player.stance === 'southpaw', reel = [];
+  const nN = (m.moves.neutral || {}).n || 0;
+  let nf = 0;
+  const bounce = (k, label, i) => { for (let j = 0; j < k && nN; j++) reel.push({ slug: 'neutral', idx: (nf++) % nN, mirror, i, label }); };
+  bounce(GAP, null, -1);
+  player.seq.forEach((s, i) => {
+    s.start = reel.length;
+    const slug = s.clip && s.clip.slug, mv = slug && m.moves[slug];
+    if (mv) for (let j = 0; j < mv.n; j++) reel.push({ slug, idx: j, mirror: s.clip.mirror, i });
+    else bounce(10, s.text, i);                       // nothing filmed: hold the bounce with the move's name
+    bounce(GAP, null, i);
+  });
+  player.reel = reel;
+  await Promise.all([...new Set(reel.map(r => r.slug))].map(sprite));
+}
+function tierInk() { return state.tier === 'BLACK' ? '#05070B' : (getComputedStyle(document.documentElement).getPropertyValue('--blue').trim() || '#1F6FEB'); }
+async function draw(fr) {
+  const cv = $('#big-cv'), cx = cv.getContext('2d'), m = MAN; if (!fr || !m) return;
+  const im = await sprite(fr.slug);
+  cx.save(); cx.clearRect(0, 0, cv.width, cv.height);
+  if (im) {
+    const sx = (fr.idx % m.cols) * m.w, sy = Math.floor(fr.idx / m.cols) * m.h;
+    if (fr.mirror) { cx.translate(cv.width, 0); cx.scale(-1, 1); }
+    cx.drawImage(im, sx, sy, m.w, m.h, 0, 0, cv.width, cv.height);
+    cx.setTransform(1, 0, 0, 1, 0, 0);
+    cx.globalCompositeOperation = 'source-in';              // paint the figure in the tier colour
+    cx.fillStyle = tierInk(); cx.fillRect(0, 0, cv.width, cv.height);
+    cx.globalCompositeOperation = 'source-over';
+  }
+  if (fr.label) {
+    cx.font = "700 64px 'Barlow Condensed', sans-serif"; cx.textAlign = 'center';
+    cx.fillStyle = 'rgba(5,7,11,.55)'; cx.fillText(fr.label, cv.width / 2, 90);
+  }
+  cx.restore();
+  cue(fr.i);
+}
+function cue(i) {
+  if (i === player.i) return; player.i = i;
+  document.querySelectorAll('#big .tok.cue').forEach(t => t.classList.remove('cue'));
+  const tk = document.querySelector(`#big .tok[data-i="${i}"]`); if (tk) tk.classList.add('cue');
+}
+function tick(t) {
+  if (!player.on) return;
+  const step = 1000 / ((MAN && MAN.fps) || 12);
+  if (t - player.last >= step) {
+    player.last = t;
+    draw(player.reel[player.f]);
+    player.f++;
+    if (player.f >= player.reel.length) { pauseWatch(); player.f = 0; $('#big-watch').textContent = '▶ Replay'; return; }
+  }
+  player.raf = requestAnimationFrame(tick);
+}
+function showStage() {
+  const box = $('#big-clip');
+  if (box.hidden) { box.hidden = false; refitBig(); }
+  $('#big-st').textContent = player.stance;
+}
+async function startWatch(fromTok) {
+  showStage();
+  if (!player.reel.length) await buildReel();
+  if (fromTok != null && player.seq[fromTok]) player.f = Math.max(0, player.seq[fromTok].start - 2);
+  player.on = true; player.last = 0;
+  $('#big-watch').setAttribute('aria-pressed', 'true'); $('#big-watch').textContent = '❚❚ Pause';
+  cancelAnimationFrame(player.raf); player.raf = requestAnimationFrame(tick);
+}
+function pauseWatch() {
+  player.on = false; cancelAnimationFrame(player.raf);
+  const w = $('#big-watch'); if (w) { w.setAttribute('aria-pressed', 'false'); w.textContent = '▶ Watch'; }
+}
+function stopClip(hide) {
+  pauseWatch(); player.f = 0; player.i = -1; player.reel = [];
+  document.querySelectorAll('#big .tok.cue').forEach(t => t.classList.remove('cue'));
+  if (hide && $('#big-clip')) $('#big-clip').hidden = true;
+}
+function refitBig() { const st = $('#big-stage'); fitText(st, st.querySelector('.combo'), 56, st.clientHeight); }
+function showClip(i) { startWatch(i); }          // ring "Watch move" lands here
+$('#big-watch').addEventListener('click', () => player.on ? pauseWatch() : startWatch());
+$('#big-stage').addEventListener('click', e => {
+  const t = e.target.closest('.tok[data-i]'); if (t) startWatch(Number(t.dataset.i));
+});
 
 /* Tapping a code drops its meaning inline — no leaving for the Notation Key.
  * If that code has a reference clip, the gloss itself becomes the link:
@@ -785,6 +920,8 @@ $('#towers').addEventListener('click', e => {
   const node = e.target.closest('.node');
   if (node) { state.tower = Number(node.dataset.num); renderTowers(); return; }
   if (e.target.closest('#ring-big')) { openBig(); return; }
+  const go = e.target.closest('.gloss .clipgo');
+  if (go) { const i = Number(go.dataset.i); openBig(); showClip(i); return; }
   const linked = e.target.closest('.gloss.linked');
   if (linked) { window.open(linked.dataset.video, '_blank', 'noopener'); return; }
 
@@ -796,12 +933,16 @@ $('#towers').addEventListener('click', e => {
   if (same) return;
 
   const video = videoFor(b.textContent);
+  const idx = [...b.closest('.combo').querySelectorAll('.tok')].indexOf(b);
+  const lines = (() => { const t = state.data.towers.map((x, i) => ({ ...x, num: towerNum(x, i) })).find(x => x.num === state.tower); return t ? (t[state.tier] || []) : []; })();
+  const toks = lines.flat().map(t => t.text);
+  const clip = MV && idx >= 0 ? MV.resolve(b.textContent, MV.stanceOf(toks)) : null;
   const g = document.createElement('div');
-  g.className = 'gloss' + (video ? ' linked' : '');
+  g.className = 'gloss' + (video && !clip ? ' linked' : '');
   g.dataset.for = b.textContent;
   if (video) g.dataset.video = video;
   g.innerHTML = `${esc(b.textContent)} — ${esc(b.dataset.gloss)}` +
-    (video ? '<span class="watch">▶ Watch</span>' : '');
+    (clip ? `<span class="watch clipgo" data-i="${idx}">▶ Watch move</span>` : video ? '<span class="watch">▶ Watch</span>' : '');
   combo.appendChild(g);
 });
 
