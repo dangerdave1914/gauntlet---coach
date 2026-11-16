@@ -161,7 +161,9 @@ async function rosterFor(sessionId) {
     .filter(r => !relId(r, 'class_session') || String(relId(r, 'class_session')) === String(sessionId))
     .map(r => {
       const user = rel(r, 'user', idx);
-      return { name: displayName(user, r), status: statusOf(r), firstVisit: isFirstVisit(r, user) };
+      const uid = relId(r, 'user') || null;
+      if (uid && user) userCountFromAttrs(uid, user);
+      return { uid, name: displayName(user, r), status: statusOf(r), firstVisit: isFirstVisit(r, user) };
     })
     .filter(p => p.status !== 'cancelled')
     .sort((a, b) => (b.firstVisit - a.firstVisit) || a.name.localeCompare(b.name));
@@ -179,6 +181,15 @@ async function day(date, { fresh = false } = {}) {
   const sessions = await sessionsFor(date);
   const rosters = await Promise.all(sessions.map(s =>
     rosterFor(s.id).catch(e => ({ error: e.message }))));
+  const uids = [...new Set(rosters.flatMap(r => Array.isArray(r) ? r.map(p => p.uid).filter(Boolean) : []))];
+  const counts = await countsFor(uids);
+  for (const r of rosters) if (Array.isArray(r)) for (const p of r) {
+    const n = p.uid != null ? counts.get(p.uid) : null;
+    p.classes = n == null ? null : n;
+    p.tier = n == null ? null : tierFor(n);
+    p.nextMilestone = n == null ? null : nextMilestone(n);
+    delete p.uid;                      // Mariana Tek's user IDs stay on the server
+  }
   const value = {
     date,
     classes: sessions.map((s, i) => {
@@ -226,9 +237,132 @@ async function probe(date) {
         includedTypes: [...new Set((r.included || []).map(x => x.type))],
         userSample: shape((r.included || []).find(x => x.type === 'users')),
       };
+      const uid = recs.map(x => relId(x, 'user')).find(Boolean);
+      if (uid) {
+        const h = await get('/reservations', { user: uid, page_size: 5 });
+        out.userHistory = {
+          count: (h.data || []).length, meta: h.meta ? Object.keys(h.meta) : null,
+          filterHeld: (h.data || []).every(x => !relId(x, 'user') || String(relId(x, 'user')) === String(uid)),
+          statuses: [...new Set((h.data || []).map(x => (x.attributes || {}).status))],
+        };
+      }
     }
   } catch (e) { out.error = e.message; }
   return out;
 }
 
-module.exports = { enabled, day, probe };
+/* -------------------------------------------------------- class counts */
+
+/**
+ * Lifetime classes = checked-in reservations. If Mariana Tek's user record
+ * carries a count, that wins; otherwise each member's reservation history is
+ * counted once and cached, since it only moves by one a day.
+ */
+const MILESTONES = (process.env.MILESTONES || '25,50,100,200,300,400,500')
+  .split(',').map(Number).filter(n => n > 0).sort((a, b) => a - b);
+const COUNT_TTL = 6 * 60 * 60 * 1000;
+const counts = new Map();   // uid -> { n, at }
+
+function userCountFromAttrs(uid, user) {
+  const u = (user && user.attributes) || {};
+  const n = first(u, 'completed_class_count', 'lifetime_class_count', 'total_class_count',
+    'class_count', 'total_classes', 'checked_in_count');
+  if (typeof n === 'number') counts.set(String(uid), { n, at: Date.now(), source: 'attribute' });
+}
+
+async function countOne(uid) {
+  const hit = counts.get(String(uid));
+  if (hit && Date.now() - hit.at < COUNT_TTL) return hit.n;
+  const { data } = await getAll('/reservations', { user: uid, page_size: 100 });
+  const n = data
+    .filter(r => !relId(r, 'user') || String(relId(r, 'user')) === String(uid))
+    .filter(r => statusOf(r) === 'in').length;
+  counts.set(String(uid), { n, at: Date.now(), source: 'history' });
+  return n;
+}
+
+/** A few at a time: a full week of members shouldn't hit the API all at once. */
+async function countsFor(uids, concurrency = 4) {
+  const out = new Map(), queue = [...uids];
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (queue.length) {
+      const uid = queue.shift();
+      try { out.set(uid, await countOne(uid)); } catch { out.set(uid, null); }
+    }
+  }));
+  return out;
+}
+
+/** The roadmap's screen tiers: WHITE through class 15, BLACK from 50. */
+const tierFor = n => n < 15 ? 'WHITE' : n < 50 ? 'BLUE' : 'BLACK';
+const nextMilestone = n => MILESTONES.find(m => m > n) || null;
+
+/* ---------------------------------------------------------- milestones */
+
+/**
+ * Members booked in the next `days` days who are closing in on a milestone.
+ * Their upcoming bookings are walked in order: if count + k lands on a
+ * milestone, the k-th booking is the class where it happens, which is the
+ * one to prep for. Anyone within `lead` classes who isn't booked far enough
+ * ahead still shows up, just without a date.
+ */
+const LEAD = Number(process.env.MILESTONE_LEAD || 5);
+const WINDOW = Number(process.env.MILESTONE_WINDOW_DAYS || 14);
+let mileCache = null;
+const MILE_TTL = 30 * 60 * 1000;
+
+function addDaysIso(iso, n) {
+  const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+async function milestones({ fresh = false, today } = {}) {
+  if (!fresh && mileCache && Date.now() - mileCache.at < MILE_TTL) return mileCache.value;
+  today = today || new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
+
+  // Every upcoming booking in the window, per member.
+  const upcoming = new Map();   // uid -> { name, bookings: [{date,time,mins,name}] }
+  for (let i = 0; i < WINDOW; i++) {
+    const date = addDaysIso(today, i);
+    const sessions = await sessionsFor(date);
+    for (const s of sessions) {
+      if (s.cancelled) continue;
+      let roster;
+      try { roster = await rosterFor(s.id); } catch { continue; }
+      for (const p of roster) {
+        if (!p.uid || p.status !== 'booked') continue;   // checked in = already counted
+        const e = upcoming.get(p.uid) || { name: p.name, bookings: [] };
+        e.bookings.push({ date, time: s.time, mins: s.mins, klass: s.name });
+        upcoming.set(p.uid, e);
+      }
+    }
+  }
+
+  const n = await countsFor([...upcoming.keys()]);
+  const pool = [];
+  for (const [uid, e] of upcoming) {
+    const have = n.get(uid);
+    if (have == null) continue;
+    const target = nextMilestone(have);
+    if (!target) continue;
+    e.bookings.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
+    const k = target - have;                       // classes still to go
+    const hit = e.bookings[k - 1] || null;         // the booking that lands on it
+    if (!hit && k > LEAD) continue;
+    pool.push({
+      name: e.name, classes: have, milestone: target, toGo: k,
+      on: hit ? { date: hit.date, time: hit.time, klass: hit.klass } : null,
+      booked: e.bookings.length,
+    });
+  }
+  pool.sort((a, b) =>
+    (a.on ? 0 : 1) - (b.on ? 0 : 1) ||
+    (a.on && b.on ? (a.on.date.localeCompare(b.on.date) || 0) : a.toGo - b.toGo) ||
+    b.milestone - a.milestone);
+
+  const value = { from: today, days: WINDOW, lead: LEAD, milestones: MILESTONES, pool, updatedAt: new Date().toISOString() };
+  mileCache = { at: Date.now(), value };
+  return value;
+}
+
+module.exports = { enabled, day, probe, milestones };

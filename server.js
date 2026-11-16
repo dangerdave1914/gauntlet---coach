@@ -14,6 +14,9 @@
  *   MT_API_KEY           Mariana Tek Admin API key, for the Members pane (mark Encrypt)
  *   MT_SUBDOMAIN         (optional) defaults to gauntletfitness
  *   MT_LOCATION          (optional) defaults to 48717
+ *   MILESTONES           (optional) defaults to 25,50,100,200,300,400,500
+ *   MILESTONE_WINDOW_DAYS (optional) how far ahead to look, default 14
+ *   MILESTONE_LEAD       (optional) list anyone this close even if not booked that far, default 5
  *   TV_URL               (optional) the lobby TV Worker. Defaults to
  *                        https://gauntlet-bingo.dangerdave1914.workers.dev
  *   PORT                 (App Platform sets this automatically)
@@ -327,7 +330,8 @@ async function loadCurriculum() {
   // see at a glance whether they're looking at current work.
   let weekTitle = '';
   for (const r of rows.slice(0, 4)) {
-    const t = r.find(v => v && /week/i.test(String(v)));
+    // v2 heads the tab "ROTATION 1: DUCKS (NOV 16 – NOV 29, 2026)"; older weeks say "WEEK 7: ...".
+    const t = r.find(v => v && /rotation\s*\d|week/i.test(String(v)));
     if (t) { weekTitle = String(t).trim(); break; }
   }
 
@@ -1388,6 +1392,29 @@ app.get('/api/members', async (req, res) => {
     res.status(502).json({ error: e.message });
   }
 });
+
+/** Members booked in the coming two weeks who are about to hit 25/50/100/...
+ *  classes, with the class where it lands, so there's time to prep. */
+app.get('/api/milestones', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.json({ enabled: false });
+    const email = String(req.query.email || '').toLowerCase().trim();
+    await warm();
+    if (!isStaff(email)) return res.status(403).json({ error: 'Register as staff to see milestones.' });
+    res.json({ enabled: true, ...(await mariana.milestones({ fresh: req.query.fresh === '1', today: gymToday() })) });
+  } catch (e) {
+    console.error('milestones:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
+// Walking two weeks of rosters is slow, so do it in the background rather
+// than on a coach's first tap.
+if (mariana.enabled()) {
+  const refreshMiles = () => mariana.milestones({ fresh: true, today: gymToday() })
+    .catch(e => console.error('milestones refresh:', e.message));
+  setTimeout(refreshMiles, 15 * 1000);
+  setInterval(refreshMiles, 30 * 60 * 1000);
+}
 
 /** Field names only, for wiring up against the live API. Schedulers only. */
 app.get('/api/members/probe', async (req, res) => {

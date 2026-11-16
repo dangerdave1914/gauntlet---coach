@@ -315,6 +315,15 @@ input[type=text],input[type=date]{
 .roster li.new{border-color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn)}
 .roster li.new::after{content:' NEW';font-size:.75em;font-weight:700;color:var(--warn)}
 .count{font-size:calc(12px * var(--fs));color:var(--chalk);margin-top:2px}
+.roster li small{font-size:.78em;opacity:.7;margin-left:4px}
+.roster li.near{border-color:#E3B341;color:#E3B341}
+.roster li.in.near{color:#fff;box-shadow:inset 0 0 0 2px #E3B341}
+.mile{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.mile:last-child{border-bottom:0}
+.mile b{font:600 calc(16px * var(--fs)) 'Barlow Condensed',sans-serif;letter-spacing:.03em}
+.mile .m{font:700 calc(18px * var(--fs)) 'Barlow Condensed',sans-serif;color:#E3B341}
+.mile .when{font-size:calc(12px * var(--fs));color:var(--chalk)}
+.miles{border:1px solid #E3B341;border-radius:12px;padding:4px 12px;margin-bottom:14px;background:var(--card)}
 .slot.open{border-color:var(--warn)}
 .slot .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .slot .when{font:600 calc(17px * var(--fs)) 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.04em}
@@ -1415,7 +1424,7 @@ $('#btn-post').addEventListener('click', () => {
  * The day's classes from Mariana Tek with who's booked. Blue = checked in,
  * outlined NEW = first visit (those are WHITE-tier people), dashed = waitlist.
  * Follows the day picker, same as Combos and Workout. */
-const members = { data: null };
+const members = { data: null, miles: null };
 
 async function loadMembers(fresh) {
   const pane = $('#pane-members');
@@ -1431,6 +1440,35 @@ async function loadMembers(fresh) {
     return;
   }
   renderMembers();
+  loadMilestones(fresh);
+}
+
+/* Milestones don't follow the day picker: it's always "from today, two weeks
+ * out", because the point is lead time to prep a celebration. */
+async function loadMilestones(fresh) {
+  try {
+    const r = await fetch(`/api/milestones?email=${encodeURIComponent(me.email)}${fresh ? '&fresh=1' : ''}`);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `Server returned ${r.status}`);
+    members.miles = d;
+  } catch (e) { members.miles = { error: e.message }; }
+  const box = $('#miles'); if (box) box.outerHTML = milesHtml();
+}
+
+function milesHtml() {
+  const m = members.miles;
+  if (!m) return '<div id="miles" class="miles"><p class="empty">Checking milestones…</p></div>';
+  if (m.error) return `<div id="miles" class="miles"><p class="empty">Milestones: ${esc(m.error)}</p></div>`;
+  if (!m.enabled) return '<div id="miles"></div>';
+  const rows = (m.pool || []).map(p => {
+    const when = p.on
+      ? `${esc(new Date(p.on.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }))} · ${esc(p.on.time)}${p.on.klass ? ' · ' + esc(p.on.klass) : ''}`
+      : `${p.toGo} to go · not booked that far yet`;
+    return `<div class="mile"><div><b>${esc(p.name)}</b><div class="when">${when}</div></div>
+      <div style="text-align:right"><span class="m">${p.milestone}</span><div class="when">at ${p.classes}</div></div></div>`;
+  }).join('');
+  return `<div id="miles" class="miles"><h2 class="sec" style="margin:8px 0 2px">Milestones coming up · next ${m.days} days</h2>
+    ${rows || '<p class="empty" style="margin:6px 0 8px">Nobody hits a milestone in the next two weeks.</p>'}</div>`;
 }
 
 function renderMembers() {
@@ -1440,7 +1478,8 @@ function renderMembers() {
   const cards = (d.classes || []).map(c => {
     const people = c.people.length
       ? `<ul class="roster">${c.people.map(p =>
-          `<li class="${p.status}${p.firstVisit ? ' new' : ''}" title="${label[p.status] || ''}">${esc(p.name)}</li>`).join('')}</ul>`
+          `<li class="${p.status}${p.firstVisit ? ' new' : ''}${p.nextMilestone && p.nextMilestone - p.classes <= 3 ? ' near' : ''}"
+             title="${[label[p.status], p.tier ? p.tier + ' tier' : '', p.classes != null ? p.classes + ' classes' : ''].filter(Boolean).join(' · ')}">${esc(p.name)}${p.classes != null ? `<small>${p.classes}</small>` : ''}</li>`).join('')}</ul>`
       : '<p class="empty" style="margin:8px 0 0">Nobody booked yet.</p>';
     const counts = [
       `${c.booked}${c.capacity ? '/' + c.capacity : ''} booked`,
@@ -1456,6 +1495,7 @@ function renderMembers() {
   const synced = new Date(d.updatedAt);
   pane.innerHTML = `<div class="datenav"><div class="label">${esc(pretty(new Date(d.date + 'T12:00:00')))}</div>
       <button id="mem-refresh" aria-label="Refresh">↻</button></div>
+    ${milesHtml()}
     ${cards}
     <p class="empty" style="margin-top:10px">From Mariana Tek · ${isNaN(synced) ? '' : synced.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>`;
   $('#mem-refresh').onclick = () => loadMembers(true);
