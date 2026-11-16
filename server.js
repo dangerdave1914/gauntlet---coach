@@ -11,6 +11,9 @@
  *   CONFIRMERS           who can confirm a week's programming rollout
  *   ANNOUNCERS           who can post announcements (defaults to CONFIRMERS)
  *   SCHEDULERS           who can build the schedule and assign coaches
+ *   MT_API_KEY           Mariana Tek Admin API key, for the Members pane (mark Encrypt)
+ *   MT_SUBDOMAIN         (optional) defaults to gauntletfitness
+ *   MT_LOCATION          (optional) defaults to 48717
  *   TV_URL               (optional) the lobby TV Worker. Defaults to
  *                        https://gauntlet-bingo.dangerdave1914.workers.dev
  *   PORT                 (App Platform sets this automatically)
@@ -18,6 +21,7 @@
 
 const express = require('express');
 const path = require('path');
+const mariana = require('./mariana');
 
 const app = express();
 app.use(express.json());
@@ -1359,6 +1363,38 @@ app.post('/api/swap/accept', async (req, res) => {
   } catch (e) {
     console.error(e); res.status(500).json({ error: e.message });
   }
+});
+
+/* ------------------------------------------------- members (Mariana Tek) */
+
+/**
+ * Who's booked into each class that day. Member names are the one thing in
+ * this app that isn't the gym's own content, so the route only answers to an
+ * email that's on the Staff tab. That's the same typed-email check as
+ * everything else here — weak until Cloudflare Access is in front of it.
+ */
+const isStaff = email => (cache.staff || []).some(s => s.email === email);
+
+app.get('/api/members', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.json({ enabled: false });
+    const email = String(req.query.email || '').toLowerCase().trim();
+    await warm();
+    if (!isStaff(email)) return res.status(403).json({ error: 'Register as staff to see member rosters.' });
+    const date = ISO.test(req.query.date || '') ? req.query.date : gymToday();
+    res.json({ enabled: true, ...(await mariana.day(date, { fresh: req.query.fresh === '1' })) });
+  } catch (e) {
+    console.error('members:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
+
+/** Field names only, for wiring up against the live API. Schedulers only. */
+app.get('/api/members/probe', async (req, res) => {
+  const email = String(req.query.email || '').toLowerCase().trim();
+  if (!SCHEDULERS.includes(email) && !CONFIRMERS.includes(email)) return res.status(403).json({ error: 'forbidden' });
+  if (!mariana.enabled()) return res.json({ enabled: false, hint: 'Set MT_API_KEY in App Platform, then redeploy.' });
+  res.json(await mariana.probe(ISO.test(req.query.date || '') ? req.query.date : gymToday()));
 });
 
 app.get('/healthz', (_, res) => res.send('ok'));

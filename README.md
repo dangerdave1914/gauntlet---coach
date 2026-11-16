@@ -37,6 +37,9 @@ App-Level Environment Variables:
 | `CONFIRMERS` | who can confirm a week's programming rollout |
 | `ANNOUNCERS` | who can post announcements — defaults to `CONFIRMERS` if unset |
 | `SCHEDULERS` | who can add class slots and assign coaches — defaults to `CONFIRMERS` |
+| `MT_API_KEY` | Mariana Tek Admin API key, for the Members pane — mark **Encrypt** |
+| `MT_SUBDOMAIN` | optional, defaults to `gauntletfitness` |
+| `MT_LOCATION` | optional, defaults to `48717` |
 
 Script Properties on the Apps Script side also need `NOTIFY_TO` — comma-separated
 emails that get alerted when a coach files a note or swap request.
@@ -90,9 +93,25 @@ put one coach's shifts on the other's phone.
 Swaps are peer-to-peer — no approval step. Both the request and the acceptance
 email `NOTIFY_TO`, so whoever runs the floor still finds out.
 
+## Members pane (Mariana Tek)
+
+`mariana.js` reads the day's class sessions and their reservations from the
+Mariana Tek Admin API. Read-only: it never books, cancels or checks anyone in.
+Each class shows who's booked: blue = checked in, outlined NEW = first visit,
+dashed = waitlist, struck through = no-show. It follows the day picker, and
+results are cached for 2 minutes (↻ forces a refresh).
+
+Only emails on the Staff tab get rosters, and only first name + last initial
+leave the server. That's still typed-email identity, so put Cloudflare Access in
+front before relying on it.
+
+First run: after setting `MT_API_KEY`, open
+`/api/members/probe?email=<a scheduler's email>`. It returns field **names**
+only (no member data), which shows whether the date and class_session filters
+took and what Mariana Tek actually calls each field.
+
 ## Known gaps
 
-- Members pane not built — needs Mariana Tek API access.
 - Coaches identify themselves by typed email at intake. Nothing stops someone
   typing another coach's address, which matters more now that swap
   notifications name people. Cloudflare Access fixes this properly.
