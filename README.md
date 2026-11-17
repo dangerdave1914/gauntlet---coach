@@ -133,21 +133,22 @@ message. Only reservations already shown on a loaded roster can be checked in.
 
 ### Private lessons
 
-Members → Privates lists everyone with a private in the last 30 days or next
-14: next and last lesson, coach, and lessons left in their pack, flagged
-**Renew** at 2 or fewer (`PRIVATE_LOW`). Privates are found by class name
-(`MT_PRIVATE_MATCH`, default "private"); pack balances come from
-`MT_CREDITS_PATH` (default `/credit_transactions`, `remaining_credits_cache`). Coaches see their own clients,
-matched by name between Mariana Tek and the Staff tab; schedulers see all.
+Privates are Mariana Tek **Appointments** (their own schedule, not classes),
+under services whose name matches `MT_PRIVATE_MATCH` (default "private" —
+Gauntlet's "PRIVATE LESSONS"; "Personal Training" is left out unless the
+pattern includes it, e.g. `private|personal`).
 
-**Booking:** the Privates view lists open private slots (upcoming private
-sessions in Mariana Tek with room). Tap Book, pick a client, and the app books
-them into that slot through Mariana Tek, paid from their pack. Coaches book into
-their own slots; schedulers into anyone's. The app can't create new slots —
-add those on the Mariana Tek schedule. Clients with no lessons left can't be
-picked; if `MT_PACK_URL` is set, they get a "Send pack link" button that opens
-the phone's share sheet so the coach can text them the Mariana Tek purchase
-link.
+Members → Privates shows what's coming up, each client's last and next lesson,
+coach, and lessons left in their private pack (from `credit_transactions`),
+flagged **Renew** at `PRIVATE_LOW` (2) or fewer. Coaches see their own;
+schedulers see all.
+
+**+ Book a private:** pick a client, date, time and (schedulers) coach; the app
+creates the appointment booking in Mariana Tek. Coaches can only book
+themselves, matched by name between the Staff tab and Mariana Tek. Booking
+fields are sent in the same format as the gym's existing bookings, and
+Mariana Tek's own error is shown if it refuses. Clients out of lessons can't be
+picked; with `MT_PACK_URL` set they get a "Send pack link" button.
 
 First run: after setting `MT_API_KEY`, open
 `/api/members/probe?email=<a scheduler's email>`. It returns field **names**
