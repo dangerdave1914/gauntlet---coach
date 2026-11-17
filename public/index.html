@@ -1546,28 +1546,32 @@ function privatesHtml() {
   const scope = d.scope === 'mine' ? 'Your privates'
     : d.scope === 'all' ? 'All privates' : 'All privates (coach names unavailable)';
   const renew = d.clients.filter(c => c.renew).length;
+  const expiringN = d.clients.filter(c => c.expiringSoon).length;
 
   const up = (d.upcoming || []).map(u => `<div class="mile"><div><b>${esc(u.client)}</b>
       <div class="when">${esc(shortDate(u.date))} · ${esc(u.time)}${u.coach && d.scope !== 'mine' ? ' · ' + esc(u.coach) : ''}</div></div></div>`).join('');
 
   const rows = d.clients.map(c => {
     const bal = c.left == null ? '<span class="when">pack: ?</span>'
-      : `<span class="m" style="color:${c.renew ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left</div>`;
+      : `<span class="m" style="color:${c.renew || c.expiringSoon ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left${c.booked ? `<br>${c.booked} booked` : ''}</div>`;
     const lines = [
       c.nextLesson ? `Next: ${esc(shortDate(c.nextLesson.date))} · ${esc(c.nextLesson.time)}` : 'Nothing booked',
       c.lastLesson ? `Last: ${esc(shortDate(c.lastLesson))}` : '',
       c.coaches.length && d.scope !== 'mine' ? esc(c.coaches.join(', ')) : '',
-      c.expires ? `Pack expires ${esc(shortDate(c.expires))}` : '',
+      c.expires && !c.expiringSoon ? `Pack expires ${esc(shortDate(c.expires))}` : '',
     ].filter(Boolean).join(' · ');
+    const expiring = c.expiringSoon
+      ? `<div class="when" style="color:var(--warn);font-style:normal;margin-top:3px">${c.expiringLeft} lesson${c.expiringLeft > 1 ? 's' : ''} expire ${esc(shortDate(c.expires))}${c.expiringLabel ? ' (' + esc(c.expiringLabel) + ')' : ''}${c.booked ? ` · ${c.booked} booked` : ' · none booked'}</div>` : '';
     const link = d.packUrl && (c.renew || c.left === 0)
       ? `<div class="acts" style="margin-top:6px"><button data-packlink="${esc(c.name)}">Send pack link</button></div>` : '';
-    return `<div class="mile"><div><b>${esc(c.name)}</b>${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
-        <div class="when">${lines}</div>${link}</div><div style="text-align:right">${bal}</div></div>`;
+    return `<div class="mile"><div><b>${esc(c.name)}</b>${c.expiringSoon ? ' <span class="kind repair">Expiring</span>' : ''}${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
+        <div class="when">${lines}</div>${expiring}${link}</div><div style="text-align:right">${bal}</div></div>`;
   }).join('');
 
   const canBook = (d.coaches || []).length && d.clients.some(c => c.cid);
   return `<div class="datenav"><div class="label">${esc(scope)}</div>
       <button id="priv-refresh" aria-label="Refresh">↻</button></div>
+    ${expiringN ? `<p class="empty" style="margin:-4px 0 6px;color:var(--warn);font-style:normal">${expiringN} client${expiringN > 1 ? 's have' : ' has'} lessons expiring in the next ${d.expiryWarnDays} days: book them in or talk renewal.</p>` : ''}
     ${renew ? `<p class="empty" style="margin:-4px 0 10px;color:var(--warn);font-style:normal">${renew} client${renew > 1 ? 's' : ''} at ${d.low} lessons or fewer: time to talk renewal.</p>` : ''}
     ${d.packError ? `<p class="empty">Pack balances unavailable: ${esc(d.packError)}</p>` : ''}
     ${canBook ? `<button id="bk-open" class="primary" style="width:100%;padding:12px;border-radius:10px;border:0;background:var(--blue);color:#fff;font:600 calc(14px * var(--fs)) 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px;cursor:pointer">+ Book a private</button>`
