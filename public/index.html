@@ -1553,19 +1553,22 @@ function privatesHtml() {
 
   const rows = d.clients.map(c => {
     const bal = c.left == null ? '<span class="when">pack: ?</span>'
-      : `<span class="m" style="color:${c.renew || c.expiringSoon ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left${c.booked ? `<br>${c.booked} booked` : ''}</div>`;
+      : `<span class="m" style="color:${c.renew || (c.source !== 'ledger' && c.expiringSoon) ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left${c.source === 'ledger' ? '' : c.booked ? `<br>${c.booked} booked` : ''}${c.source === 'pack' ? '<br><span style="opacity:.6">MT pack</span>' : ''}</div>`;
+    const ledgerLine = c.source === 'ledger'
+      ? `<div class="when" style="font-style:normal;margin-top:2px">${c.granted} since ${esc(shortDate(c.since))} · ${c.done} done · ${c.booked} booked · <b>${c.toBook}</b> to book</div>` : '';
     const lines = [
       c.nextLesson ? `Next: ${esc(shortDate(c.nextLesson.date))} · ${esc(c.nextLesson.time)}` : 'Nothing booked',
       c.lastLesson ? `Last: ${esc(shortDate(c.lastLesson))}` : '',
       c.coaches.length && d.scope !== 'mine' ? esc(c.coaches.join(', ')) : '',
-      c.expires && !c.expiringSoon ? `Pack expires ${esc(shortDate(c.expires))}` : '',
+      c.source !== 'ledger' && c.expires && !c.expiringSoon ? `Pack expires ${esc(shortDate(c.expires))}` : '',
     ].filter(Boolean).join(' · ');
-    const expiring = c.expiringSoon
+    const expiring = c.source !== 'ledger' && c.expiringSoon
       ? `<div class="when" style="color:var(--warn);font-style:normal;margin-top:3px">${c.expiringLeft} lesson${c.expiringLeft > 1 ? 's' : ''} expire ${esc(shortDate(c.expires))}${c.expiringLabel ? ' (' + esc(c.expiringLabel) + ')' : ''}${c.booked ? ` · ${c.booked} booked` : ' · none booked'}</div>` : '';
-    const link = d.packUrl && (c.renew || c.left === 0)
-      ? `<div class="acts" style="margin-top:6px"><button data-packlink="${esc(c.name)}">Send pack link</button></div>` : '';
-    return `<div class="mile"><div><b>${esc(c.name)}</b>${c.expiringSoon ? ' <span class="kind repair">Expiring</span>' : ''}${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
-        <div class="when">${lines}</div>${expiring}${link}</div><div style="text-align:right">${bal}</div></div>`;
+    const link = `<div class="acts" style="margin-top:6px">
+        <button data-lessons="${esc(c.cid)}">Lessons</button>
+        ${d.packUrl && (c.renew || c.left === 0) ? `<button data-packlink="${esc(c.name)}">Send pack link</button>` : ''}</div>`;
+    return `<div class="mile"><div><b>${esc(c.name)}</b>${c.source !== 'ledger' && c.expiringSoon ? ' <span class="kind repair">Expiring</span>' : ''}${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
+        <div class="when">${lines}</div>${ledgerLine}${expiring}${link}</div><div style="text-align:right">${bal}</div></div>`;
   }).join('');
 
   const canBook = (d.coaches || []).length && d.clients.some(c => c.cid);
@@ -1660,6 +1663,39 @@ function bookDialog() {
   };
 }
 
+/* Set or add a client's private lessons. Each save is a new ledger row
+ * (renewal +4, correction -1); the history shows underneath. */
+function lessonsDialog(cid) {
+  const c = (members.priv.clients || []).find(x => x.cid === cid); if (!c) return;
+  const hist = (c.grants || []).map(g => `<div class="when">${g.lessons > 0 ? '+' : ''}${g.lessons} from ${esc(shortDate(g.since))}${g.by ? ' · ' + esc(g.by) : ''}${g.note ? ' · ' + esc(g.note) : ''}</div>`).join('');
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>${esc(c.name)}: lessons</h2>
+    <p class="sub">${c.source === 'ledger'
+      ? `${c.granted} given since ${esc(shortDate(c.since))} · ${c.done} done · ${c.booked} booked · ${c.left} left`
+      : 'Not tracked in the app yet. Enter the lessons they have now, counted from the date they start.'}</p>
+    <input type="number" id="lg-n" inputmode="numeric" placeholder="lessons (e.g. 4, or -1 to correct)" value="${c.source === 'ledger' ? '' : (c.left || '')}">
+    <input type="date" id="lg-since" value="${TODAY}">
+    <input type="text" id="lg-note" placeholder="note (optional), e.g. Hybrid 8+4, renewal">
+    ${hist ? `<div style="margin:8px 0">${hist}</div>` : ''}
+    <footer style="position:static;padding:0;gap:8px;background:none;margin-top:10px">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="lg-go">Save</button>
+    </footer><div class="err" id="lg-err"></div>`;
+  $('#lg-go').onclick = async () => {
+    const n = Number($('#lg-n').value);
+    if (!n) { $('#lg-err').textContent = 'Enter a number of lessons.'; return; }
+    $('#lg-go').disabled = true; $('#lg-go').textContent = 'Saving…';
+    try {
+      const r = await fetch('/api/privates/grant', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: me.email, cid, lessons: n, since: $('#lg-since').value, note: $('#lg-note').value.trim() }) });
+      const out = await r.json().catch(() => ({ error: `Server returned ${r.status}` }));
+      if (!r.ok || out.error) throw new Error(out.error);
+      $('#dlg').close(); loadPrivates(true);
+    } catch (err) { $('#lg-err').textContent = err.message; $('#lg-go').disabled = false; $('#lg-go').textContent = 'Save'; }
+  };
+}
+
 /* One delegated handler for the whole pane: view switch, refresh, check-in. */
 $('#pane-members').addEventListener('click', async e => {
   const v = e.target.closest('#memtog button');
@@ -1671,6 +1707,8 @@ $('#pane-members').addEventListener('click', async e => {
   if (e.target.closest('#mem-refresh')) return loadMembers(true);
   if (e.target.closest('#priv-refresh')) return loadPrivates(true);
   if (e.target.closest('#bk-open')) return bookDialog();
+  const lb = e.target.closest('button[data-lessons]');
+  if (lb) return lessonsDialog(lb.dataset.lessons);
   const pl = e.target.closest('button[data-packlink]');
   if (pl) {
     const url = members.priv.packUrl;

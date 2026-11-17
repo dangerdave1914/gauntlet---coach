@@ -143,6 +143,18 @@ coach, and lessons left in their private pack (from `credit_transactions`),
 flagged **Renew** at `PRIVATE_LOW` (2) or fewer. Coaches see their own;
 schedulers see all.
 
+**Lesson ledger:** Mariana Tek doesn't deduct a credit when a private is booked
+or completed (and hybrid memberships like 8 classes + 4 privates never touch
+appointments), so the app keeps its own count. **Lessons** on a client opens a
+form: lessons (+4 for a new pack or renewal, -1 to correct) and a start date.
+Each save is a row on the **Private Ledger** tab in Master Control (Member ID,
+Client, Lessons, Since, Set By, Set At, Note) — edit it by hand if needed.
+Left = all lessons given − privates completed (past, not cancelled) since the
+first grant; "to book" also subtracts upcoming bookings. Clients without ledger
+rows fall back to their Mariana Tek pack balance. Appointments are read
+`PRIVATE_LOOKBACK_DAYS` (180) back. Schedulers can set anyone's lessons; a
+coach can set their own clients'.
+
 **+ Book a private:** pick a client, date, time and (schedulers) coach; the app
 creates the appointment booking in Mariana Tek. Coaches can only book
 themselves, matched by name between the Staff tab and Mariana Tek. Booking

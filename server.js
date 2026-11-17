@@ -1448,6 +1448,117 @@ function sameCoach(a, b) {
   return s.length > 0 && s.every(t => l.includes(t));
 }
 
+/* ------------------------------------------------- private-lesson ledger */
+
+/**
+ * The app's own record of private lessons, because Mariana Tek doesn't
+ * deduct a credit when an appointment is booked or completed (hybrid
+ * memberships like "8 classes + 4 privates" never touch appointments).
+ * Each row grants lessons from a date; renewals add rows, corrections can be
+ * negative. Left = everything granted - privates completed since the first
+ * grant. Lives in Master Control as "Private Ledger" so it's readable and
+ * fixable by hand.
+ */
+const LEDGER_TAB = 'Private Ledger';
+const LEDGER_HEADERS = ['Member ID', 'Client', 'Lessons', 'Since', 'Set By', 'Set At', 'Note'];
+let ledgerCache = { at: 0, rows: [] };
+
+async function loadLedger(force = false) {
+  if (!force && Date.now() - ledgerCache.at < 60 * 1000) return ledgerCache.rows;
+  const rows = (await readTab(CURRICULUM, LEDGER_TAB)).map((r, i) => ({
+    row: i + 2, uid: cell(r, 0), client: cell(r, 1), lessons: Number(cell(r, 2)) || 0,
+    since: normDate(cell(r, 3)), by: cell(r, 4), at: cell(r, 5), note: cell(r, 6),
+  })).filter(x => x.uid && x.lessons);
+  ledgerCache = { at: Date.now(), rows };
+  return rows;
+}
+/** Sheets hands back dates as "11/1/2026" or "2026-11-01"; normalize. */
+function normDate(v) {
+  const s = String(v || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  const d = new Date(s); return isNaN(d) ? '' : d.toISOString().slice(0, 10);
+}
+/** The bridge only adds headers for tabs it knows; write them ourselves once. */
+async function appendLedger(row) {
+  const tabs = await tabNames(CURRICULUM);
+  if (!tabs.includes(LEDGER_TAB)) await appendRow(CURRICULUM, LEDGER_TAB, LEDGER_HEADERS);
+  await appendRow(CURRICULUM, LEDGER_TAB, row);
+  ledgerCache.at = 0;
+}
+
+/** Fold ledger grants into the Privates clients; strips server-only fields. */
+async function withLedger(d) {
+  let ledger = [];
+  try { ledger = await loadLedger(); } catch (e) { console.error('ledger:', e.message); }
+  const byUid = new Map();
+  for (const g of ledger) { if (!byUid.has(g.uid)) byUid.set(g.uid, []); byUid.get(g.uid).push(g); }
+
+  const clients = d.clients.map(c => {
+    const grants = byUid.get(String(c.uid)) || [];
+    byUid.delete(String(c.uid));
+    return ledgerize(c, grants, d.low);
+  });
+  // Clients granted lessons who have no privates booked in the window yet.
+  for (const [uid, grants] of byUid) {
+    clients.push(ledgerize({
+      uid, cid: mariana.tokenFor(uid), name: grants[0].client || 'Client', coaches: [],
+      lastLesson: null, nextLesson: null, upcoming: 0, booked: 0, lessonLog: [],
+      left: null, expires: null, renew: false, expiringSoon: false,
+    }, grants, d.low));
+  }
+  clients.sort((a, b) => (b.expiringSoon - a.expiringSoon) || (b.renew - a.renew) ||
+    ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
+  return { ...d, clients };
+}
+
+function ledgerize(c, grants, low) {
+  const { uid, lessonLog, ...pub } = c;
+  if (!grants.length) return { ...pub, source: 'pack' };
+  const since = grants.map(g => g.since).filter(Boolean).sort()[0] || '0000-00-00';
+  const granted = grants.reduce((n, g) => n + g.lessons, 0);
+  const done = (lessonLog || []).filter(l => !l.upcoming && l.date >= since).length;
+  const booked = (lessonLog || []).filter(l => l.upcoming).length;
+  const left = granted - done;
+  return {
+    ...pub, source: 'ledger', granted, since, done, booked, left,
+    toBook: Math.max(0, left - booked), renew: left <= low,
+    grants: grants.map(g => ({ lessons: g.lessons, since: g.since, by: g.by, note: g.note })),
+  };
+}
+
+/** Grant (or correct) a client's private lessons. Schedulers for anyone;
+ *  a coach for clients they teach. */
+app.post('/api/privates/grant', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.status(400).json({ error: 'Mariana Tek isn\'t connected.' });
+    const email = String(req.body.email || '').toLowerCase().trim();
+    await warm();
+    const me = (cache.staff || []).find(s => s.email === email);
+    if (!me) return res.status(403).json({ error: 'Register as staff to set lessons.' });
+    const lessons = Math.trunc(Number(req.body.lessons));
+    if (!lessons || Math.abs(lessons) > 100) return res.status(400).json({ error: 'Enter a number of lessons (use a minus sign to take some away).' });
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(req.body.since || '') ? req.body.since : gymToday();
+    const uid = mariana.uidForToken(req.body.cid);
+    if (!uid) return res.status(400).json({ error: 'That client isn\'t on the current list. Refresh Privates and try again.' });
+    const d = await mariana.privates({ today: gymToday() });
+    const client = d.clients.find(c => String(c.uid) === String(uid));
+    const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
+    if (!all && !(client && client.coaches.some(n => sameCoach(n, me.name)))) {
+      return res.status(403).json({ error: 'Only a scheduler or this client\'s coach can change their lessons.' });
+    }
+    const name = client ? client.name : await mariana.clientName(uid);
+    await appendLedger([String(uid), name, lessons, since, me.name,
+      new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }), String(req.body.note || '').slice(0, 200)]);
+    console.log(`ledger: ${lessons > 0 ? '+' : ''}${lessons} for ${name} from ${since} by ${me.name}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('grant:', e.message);
+    res.status(424).json({ error: e.message });
+  }
+});
+
 /** Private-lesson clients, upcoming privates and pack balances, from Mariana
  *  Tek Appointments. Coaches see their own clients and lessons; schedulers
  *  and confirmers see everyone's. */
@@ -1459,7 +1570,8 @@ app.get('/api/privates', async (req, res) => {
     const me = (cache.staff || []).find(s => s.email === email);
     if (!me) return res.status(403).json({ error: 'Register as staff to see private lessons.' });
     const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
-    const d = await mariana.privates({ fresh: req.query.fresh === '1', today: gymToday() });
+    if (req.query.fresh === '1') ledgerCache.at = 0;
+    const d = await withLedger(await mariana.privates({ fresh: req.query.fresh === '1', today: gymToday() }));
     const myPid = mariana.coachIdFor(me.name, d.coaches, sameCoach);
     const anyCoachKnown = d.clients.some(c => c.coaches.length);
     const mine = n => sameCoach(n, me.name);

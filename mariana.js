@@ -682,6 +682,7 @@ async function checkIn(rid) {
 const PRIVATE_MATCH = new RegExp(process.env.MT_PRIVATE_MATCH || 'private', 'i');
 const PRIVATE_LOW = Number(process.env.PRIVATE_LOW || 2);
 const EXPIRY_WARN_DAYS = Number(process.env.PACK_EXPIRY_WARN_DAYS || 14);
+const LOOKBACK_DAYS = Number(process.env.PRIVATE_LOOKBACK_DAYS || 180);
 // /credits turned out to be credit TYPES (no balances). Balances live on
 // credit_transactions: one per package purchase/gift, carrying
 // remaining_credits_cache, credit_name, expiration_datetime and is_expired.
@@ -883,7 +884,8 @@ let lastBookings = [];   // kept as a format template for creating bookings
 async function privates({ fresh = false, today } = {}) {
   if (!fresh && privCache && Date.now() - privCache.at < PRIV_TTL) return privCache.value;
   today = today || new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const from = addDaysIso(today, -30), to = addDaysIso(today, 30);
+  // Long enough to count a whole pack's lessons for the ledger.
+  const from = addDaysIso(today, -LOOKBACK_DAYS), to = addDaysIso(today, 30);
   const services = await privateServices();
   await loadCoachNames(today);
 
@@ -931,6 +933,8 @@ async function privates({ fresh = false, today } = {}) {
     const next = c.lessons.filter(l => l.upcoming).sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins)[0] || null;
     const left = c.pack ? c.pack.left : null;
     return {
+      uid: c.uid,                                         // server-only; stripped before it leaves
+      lessonLog: c.lessons.map(l => ({ date: l.date, upcoming: l.upcoming })),   // server-only
       cid: tokenFor(c.uid), name: c.name, coaches: [...c.coaches],
       lastLesson: done.map(l => l.date).sort().pop() || null,
       nextLesson: next ? { date: next.date, time: next.time, coach: next.coach } : null,
@@ -1129,4 +1133,5 @@ function coachIdFor(staffName, coaches, same) {
   return hit ? hit.pid : null;
 }
 
-module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, coachIdFor, privateCoaches };
+const uidForToken = cid => tokens.get(String(cid || '')) || null;
+module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, coachIdFor, privateCoaches, uidForToken, tokenFor, clientName };
