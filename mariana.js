@@ -30,6 +30,7 @@ async function get(path, params = {}) {
   for (const [k, v] of Object.entries(params)) if (v != null && v !== '') url.searchParams.set(k, v);
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json' },
+    signal: AbortSignal.timeout(20000),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -714,6 +715,7 @@ async function appt(path, params = {}, { method = 'GET', body } = {}) {
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json',
                ...(body ? { 'Content-Type': 'application/vnd.api+json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20000),
   });
   const text = await res.text();
   let json = null; try { json = text ? JSON.parse(text) : null; } catch {}
@@ -892,7 +894,9 @@ async function privates({ fresh = false, today } = {}) {
   upcomingAll.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
   const value = {
     from, to, low: PRIVATE_LOW, clients: out, upcoming: upcomingAll.slice(0, 60), packError,
-    services: services.map(s => ({ id: s.id, name: s.service_name, duration: s.duration })),
+    services: services.map(s => ({ id: s.id, name: s.service_name,
+      minutes: Number(s.duration) > 300 ? Math.round(Number(s.duration) / 60) : Number(s.duration) || null,
+      coachIds: (s.providers || []).map(p => String(p && typeof p === 'object' ? p.id : p)) })),
     coaches: svcCoaches, bookings: bookings.length,
     packUrl: PACK_URL || null, updatedAt: new Date().toISOString(),
   };
@@ -924,8 +928,12 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
   if (!prov) throw new Error('That coach isn\'t set up to teach this service in Mariana Tek.');
 
   const tpl = lastBookings.find(b => String(b.service_id) === String(sv.id)) || lastBookings[0] || {};
-  const dur = Number(sv.duration || tpl.duration || 60);
+  // Mariana Tek gives duration in SECONDS (the probe's service said 3600).
+  const durRaw = Number(sv.duration || tpl.duration || 3600);
+  const dur = durRaw > 300 ? Math.round(durRaw / 60) : durRaw;     // minutes
+  if (dur < 10 || dur > 240) throw new Error(`Service length looks wrong (${durRaw}). Not booking.`);
   const endMins = hm[0] * 60 + hm[1] + dur;
+  if (endMins >= 1440) throw new Error('That lesson would run past midnight. Pick an earlier time.');
   const withSecs = /:\d{2}:\d{2}$/.test(String(tpl.start_time || '')) || !tpl.start_time;
   const fmtT = (h, m) => `${pad(h)}:${pad(m)}${withSecs ? ':00' : ''}`;
   const body = {
@@ -933,9 +941,9 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     customer_id: String(uid),
     providers: [{ id: prov.id != null ? prov.id : prov, type: prov.type || 'employee' }],
     number_of_people: 1,
-    start_date: date, end_date: endMins >= 1440 ? addDaysIso(date, 1) : date,
+    start_date: date, end_date: date,
     start_time: fmtT(hm[0], hm[1]), end_time: fmtT(Math.floor(endMins / 60) % 24, endMins % 60),
-    duration: dur,
+    duration: durRaw > 300 ? durRaw : dur * 60,      // back to seconds, as Mariana Tek stores it
     timezone: tpl.timezone || TZ,
     ...(tpl.location_id ? { location_id: tpl.location_id } : (sv.locations && sv.locations[0] ? { location_id: String(sv.locations[0].id || sv.locations[0]) } : { location_id: LOCATION })),
     ...(tpl.recurrence_type ? { recurrence_type: tpl.recurrence_type } : {}),

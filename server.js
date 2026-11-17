@@ -1516,5 +1516,16 @@ app.get('/api/members/probe', async (req, res) => {
 
 app.get('/healthz', (_, res) => res.send('ok'));
 
+/* Any /api path that isn't a route, and any error Express itself catches
+ * (bad JSON body, etc.), answers in JSON. An HTML error page reaching the
+ * phone shows up as "Unexpected token '<'", which tells nobody anything. */
+app.use('/api', (req, res) => res.status(404).json({ error: `No such route: ${req.method} ${req.path}` }));
+app.use((err, req, res, next) => {
+  console.error('unhandled:', err && err.stack || err);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message || 'Server error' });
+});
+process.on('unhandledRejection', e => console.error('unhandledRejection:', e && e.stack || e));
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Gauntlet Coach on :${PORT}`));
