@@ -317,6 +317,18 @@ async function probe(date) {
           creditNames: [...new Set(recs.map(x => (x.attributes || {}).credit_name).filter(Boolean))] };
       } catch (e) { out.credits = { path: CREDITS_PATH, error: e.message }; }
     }
+    // Privates may be Mariana Tek Appointments, which live on their own
+    // schedule, apart from class_sessions. Read-only GETs on likely paths;
+    // a 404 just means "not here".
+    out.appointments = {};
+    for (const path of (process.env.MT_APPT_PATHS || '/appointments,/appointment_bookings,/appointment_sessions,/appointment_reservations,/appointment_types,/services').split(',')) {
+      try {
+        const r = await get(path.trim(), { page_size: 3, min_date: date, max_date: addDaysIso(date, 14) });
+        out.appointments[path.trim()] = { ok: true, count: (r.data || []).length, meta: r.meta || null, sample: shape((r.data || [])[0]),
+          // Type/service names aren't personal; list them so we know what privates are called.
+          names: [...new Set((r.data || []).map(x => displayText(first(x.attributes || {}, 'name', 'service_name', 'appointment_type_display', 'display_name'))).filter(Boolean))] };
+      } catch (e) { out.appointments[path.trim()] = { ok: false, error: e.message.replace(/^Mariana Tek /, '') }; }
+    }
     out.checkIn = 'Not probed — it would change a real record. The first tap in the app will report whether it works.';
   } catch (e) { out.error = e.message; }
   return out;
