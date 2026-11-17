@@ -11,7 +11,8 @@ Two pieces:
 
 ## 1. Deploy the bridge
 
-Setup steps are in the header comment of `Code.gs`. Short version:
+Setup steps are in the header comment of `Code.gs`. The curriculum sheet is
+now **Master Control v2** (`1Bp7EJ…`). Short version:
 script.google.com → new project → paste `Code.gs` → Script Properties →
 `SHARED_SECRET` = a long random string → Deploy as Web app, **Execute as: Me**,
 **Who has access: Anyone** → copy the `/exec` URL.
@@ -37,6 +38,9 @@ App-Level Environment Variables:
 | `CONFIRMERS` | who can confirm a week's programming rollout |
 | `ANNOUNCERS` | who can post announcements — defaults to `CONFIRMERS` if unset |
 | `SCHEDULERS` | who can add class slots and assign coaches — defaults to `CONFIRMERS` |
+| `MT_API_KEY` | Mariana Tek Admin API key, for the Members pane — mark **Encrypt** |
+| `MT_SUBDOMAIN` | optional, defaults to `gauntletfitness` |
+| `MT_LOCATION` | optional, defaults to `48717` |
 
 Script Properties on the Apps Script side also need `NOTIFY_TO` — comma-separated
 emails that get alerted when a coach files a note or swap request.
@@ -90,9 +94,42 @@ put one coach's shifts on the other's phone.
 Swaps are peer-to-peer — no approval step. Both the request and the acceptance
 email `NOTIFY_TO`, so whoever runs the floor still finds out.
 
+## Members pane (Mariana Tek)
+
+`mariana.js` reads the day's class sessions and their reservations from the
+Mariana Tek Admin API. Read-only: it never books, cancels or checks anyone in.
+Each class shows who's booked: blue = checked in, outlined NEW = first visit,
+dashed = waitlist, struck through = no-show. It follows the day picker, and
+results are cached for 2 minutes (↻ forces a refresh).
+
+Only emails on the Staff tab get rosters, and only first name + last initial
+leave the server. That's still typed-email identity, so put Cloudflare Access in
+front before relying on it.
+
+### Milestones
+
+The top of the Members pane lists everyone booked in the next 14 days who is
+about to hit 25, 50, 100, 200, 300, 400 or 500 classes. When a member is
+booked far enough ahead, it names the exact class where they cross the line,
+so there's lead time to prep the celebration. Anyone within 5 classes who
+isn't booked that far out still shows, marked "to go".
+
+A class count = checked-in reservations in Mariana Tek. Two consequences:
+history from before Gauntlet moved onto Mariana Tek isn't counted, and anyone
+who isn't checked in at the desk doesn't get credit. Roster chips also show
+each member's count and their roadmap tier (WHITE under 15, BLUE 15–49, BLACK
+50+), and turn gold within 3 of a milestone.
+
+Tune with `MILESTONES`, `MILESTONE_WINDOW_DAYS` and `MILESTONE_LEAD`. The list
+rebuilds in the background every 30 minutes.
+
+First run: after setting `MT_API_KEY`, open
+`/api/members/probe?email=<a scheduler's email>`. It returns field **names**
+only (no member data), which shows whether the date and class_session filters
+took and what Mariana Tek actually calls each field.
+
 ## Known gaps
 
-- Members pane not built — needs Mariana Tek API access.
 - Coaches identify themselves by typed email at intake. Nothing stops someone
   typing another coach's address, which matters more now that swap
   notifications name people. Cloudflare Access fixes this properly.
