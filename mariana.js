@@ -321,12 +321,58 @@ async function probe(date) {
     // schedule, apart from class_sessions. Read-only GETs on likely paths;
     // a 404 just means "not here".
     out.appointments = {};
+    // /appointments answers, but not with a list: likely a directory of
+    // appointment endpoints. Report its keys (and any paths it names), then
+    // read each one it points to. Keys and URLs only, no values.
+    try {
+      const root = await get('/appointments', {});
+      const d = root.data;
+      const desc = v => Array.isArray(v) ? `list(${v.length})` : v && typeof v === 'object' ? 'object' : typeof v;
+      const links = {};
+      const walk = (obj, prefix = '') => {
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+        for (const [k, v] of Object.entries(obj)) {
+          if (typeof v === 'string' && /^(https?:\/\/|\/)/.test(v)) links[prefix + k] = v.replace(/^https?:\/\/[^/]+/, '');
+          else if (v && typeof v === 'object' && !Array.isArray(v) && prefix.split('.').length < 3) walk(v, prefix + k + '.');
+        }
+      };
+      walk(root);
+      out.appointmentsRoot = {
+        topKeys: Object.keys(root),
+        dataIs: desc(d),
+        dataKeys: d && typeof d === 'object' && !Array.isArray(d) ? Object.keys(d) : null,
+        dataShape: d && typeof d === 'object' && !Array.isArray(d) && d.type ? shape(d) : null,
+        links,
+      };
+      // Follow what it names (max 12), relative to /api.
+      out.appointmentsFollow = {};
+      for (const [k, url] of Object.entries(links).slice(0, 12)) {
+        const path = url.replace(/^\/api/, '').split('?')[0];
+        try {
+          const r = await get(path, { page_size: 3 });
+          const list = Array.isArray(r.data) ? r.data : null;
+          out.appointmentsFollow[k] = { path, ok: true, dataIs: desc(r.data), count: list ? list.length : null,
+            meta: r.meta ? Object.keys(r.meta) : null, sample: list ? shape(list[0]) : null,
+            names: list ? [...new Set(list.map(x => displayText(first(x.attributes || {}, 'name', 'display_name', 'service_name'))).filter(Boolean))] : null };
+        } catch (e) { out.appointmentsFollow[k] = { path, ok: false, error: e.message.replace(/^Mariana Tek /, '') }; }
+      }
+    } catch (e) { out.appointmentsRoot = { error: e.message }; }
+    // Common sub-paths, in case the directory doesn't name them.
+    for (const sub of ['/appointments/appointments', '/appointments/bookings', '/appointments/slots', '/appointments/services', '/appointments/availability', '/appointments/sessions']) {
+      try {
+        const r = await get(sub, { page_size: 3 });
+        const list = Array.isArray(r.data) ? r.data : null;
+        out.appointments[sub] = { ok: true, dataIs: list ? `list(${list.length})` : typeof r.data, sample: list ? shape(list[0]) : null,
+          topKeys: Object.keys(r) };
+      } catch (e) { out.appointments[sub] = { ok: false, error: e.message.replace(/^Mariana Tek /, '') }; }
+    }
     for (const path of (process.env.MT_APPT_PATHS || '/appointments,/appointment_bookings,/appointment_sessions,/appointment_reservations,/appointment_types,/services').split(',')) {
       try {
         const r = await get(path.trim(), { page_size: 3, min_date: date, max_date: addDaysIso(date, 14) });
-        out.appointments[path.trim()] = { ok: true, count: (r.data || []).length, meta: r.meta || null, sample: shape((r.data || [])[0]),
+        const list = Array.isArray(r.data) ? r.data : [];
+        out.appointments[path.trim()] = { ok: true, dataIsList: Array.isArray(r.data), count: list.length, meta: r.meta || null, sample: shape(list[0]),
           // Type/service names aren't personal; list them so we know what privates are called.
-          names: [...new Set((r.data || []).map(x => displayText(first(x.attributes || {}, 'name', 'service_name', 'appointment_type_display', 'display_name'))).filter(Boolean))] };
+          names: [...new Set(list.map(x => displayText(first(x.attributes || {}, 'name', 'service_name', 'appointment_type_display', 'display_name'))).filter(Boolean))] };
       } catch (e) { out.appointments[path.trim()] = { ok: false, error: e.message.replace(/^Mariana Tek /, '') }; }
     }
     out.checkIn = 'Not probed — it would change a real record. The first tap in the app will report whether it works.';
