@@ -29,7 +29,7 @@
  */
 
 const SHEETS = {
-  curriculum: '1wyxgWkMRi69vIZE_Ra3HWoHBouZ8Mo37a1mdkk0-XWs',
+  curriculum: '1Bp7EJlnth2Q3pRQn0EEH9ftFNb2S_ir-NDXDxVtKZqs',
   programming: '156YWMbSQCeWdtu4_NY-kxvrueLfGzn3Jsv9FlHVKtu8',
 };
 
