@@ -413,26 +413,41 @@ async function probe(date) {
       return t;
     };
     out.appointmentTries = {};
+    // Round 4. Bookings want UTC timestamps; timeblocks want plain dates.
+    // Look back 60 days for bookings so a past private shows its shape, and
+    // check every coach on both services for slots.
+    const back60Z = new Date(addDaysIso(date, -60) + 'T00:00:00-06:00').toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const firstHit = arr => arr.find(t => t.count) || arr[0];
     out.appointmentTries.bookings = [
-      await tryOne('/appointments/bookings', { start_date: startZ, end_date: endZ }),
-      await tryOne('/appointments/bookings', { start_date: startZ }),
+      await tryOne('/appointments/bookings', { start_date: back60Z, end_date: endZ }),
     ];
+    for (const sv of services.map(x => x.id)) {
+      out.appointmentTries.bookings.push(Object.assign(
+        await tryOne('/appointments/bookings', { start_date: back60Z, end_date: endZ, service_id: sv }), { service: sv }));
+    }
     out.appointmentTries.categories = [ await tryOne('/appointments/categories', { per_page: 25 }) ];
-    // First provider on the first service.
-    const prov = (svcAttr(services[0] || {}).providers || [])[0];
-    const pid = prov && typeof prov === 'object' ? (prov.id || prov.provider_id) : prov;
-    const ptypes = [...new Set([prov && (prov.type || prov.provider_type), 'employee', 'employees', 'instructor', 'Employee'].filter(Boolean))];
-    out.appointmentTries.availabilities = [];
-    out.appointmentTries.timeblocks = [];
-    if (pid != null) {
-      for (const pt of ptypes) {
-        const a = await tryOne('/appointments/availabilities', { provider_id: pid, provider_type: pt, start_date: startZ, end_date: endZ });
-        a.providerType = pt; out.appointmentTries.availabilities.push(a);
-        const b = await tryOne('/appointments/timeblocks', { provider_id: pid, provider_type: pt, start_date: startZ, end_date: endZ });
-        b.providerType = pt; out.appointmentTries.timeblocks.push(b);
-        if (a.status < 300 || b.status < 300) break;
-      }
-    } else out.appointmentTries.note = 'No provider on the first service — check that a coach is assigned to it in Mariana Tek.';
+
+    const providers = [];
+    for (const x of services) for (const p of (svcAttr(x).providers || [])) {
+      const id = p && typeof p === 'object' ? p.id : p;
+      if (id != null && !providers.some(q => String(q.id) === String(id))) providers.push({ id, type: (p && p.type) || 'employee', service: x.id });
+    }
+    out.appointmentTries.providers = providers.length;
+    const slots = { availabilities: [], timeblocks: [] };
+    for (const p of providers) {
+      const a = await tryOne('/appointments/availabilities', { provider_id: p.id, provider_type: p.type, start_date: startZ, end_date: endZ });
+      const b = await tryOne('/appointments/timeblocks', { provider_id: p.id, provider_type: p.type, start_date: date, end_date: addDaysIso(date, 14) });
+      slots.availabilities.push(Object.assign(a, { provider: `#${providers.indexOf(p) + 1}` }));
+      slots.timeblocks.push(Object.assign(b, { provider: `#${providers.indexOf(p) + 1}` }));
+    }
+    // Per-coach counts, plus the shape of the first non-empty one.
+    for (const k of ['availabilities', 'timeblocks']) {
+      out.appointmentTries[k] = {
+        perProvider: slots[k].map(t => t.status < 300 ? `${t.provider}: ${t.count}` : `${t.provider}: ${t.status} ${t.error || ''}`.slice(0, 140)),
+        firstFound: (() => { const h = slots[k].find(t => t.count); return h ? { provider: h.provider, item: h.item, meta: h.meta } : null; })(),
+      };
+    }
+    out.appointmentTries.bookingsFound = (() => { const h = firstHit(out.appointmentTries.bookings); return h && h.count ? h.item : null; })();
     // Common sub-paths, in case the directory doesn't name them.
     for (const sub of ['/appointments/appointments', '/appointments/bookings', '/appointments/slots', '/appointments/services', '/appointments/availability', '/appointments/sessions']) {
       try {
