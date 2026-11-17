@@ -663,9 +663,14 @@ const PACK_URL = (process.env.MT_PACK_URL || '').trim();
 const crypto = require('crypto');
 const tokens = new Map();     // token -> uid
 const tokenOf = new Map();    // uid -> token
+// Deterministic (HMAC of the member id, keyed off the API key), so a
+// restart or redeploy doesn't invalidate the codes a phone already holds.
 function tokenFor(uid) {
   uid = String(uid);
-  if (!tokenOf.has(uid)) { const t = crypto.randomBytes(9).toString('base64url'); tokenOf.set(uid, t); tokens.set(t, uid); }
+  if (!tokenOf.has(uid)) {
+    const t = crypto.createHmac('sha256', String(KEY || 'gauntlet')).update('client:' + uid).digest('base64url').slice(0, 16);
+    tokenOf.set(uid, t); tokens.set(t, uid);
+  }
   return tokenOf.get(uid);
 }
 
@@ -931,8 +936,13 @@ function hhmm(t) { const m = String(t).match(/^(\d{1,2}):(\d{2})$/); return m ? 
 const pad = n => String(n).padStart(2, '0');
 
 async function bookPrivate({ cid, date, time, pid, serviceId }) {
-  const uid = tokens.get(String(cid || ''));
-  if (!uid) throw new Error('Pick a client from the list.');
+  if (!cid) throw new Error('Pick a client from the list.');
+  let uid = tokens.get(String(cid));
+  if (!uid) {                       // server restarted since the page loaded: rebuild the list once
+    await privates({ fresh: true });
+    uid = tokens.get(String(cid));
+  }
+  if (!uid) throw new Error('That client isn\'t on the current list. Refresh Privates and try again.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('Pick a date.');
   const hm = hhmm(time); if (!hm) throw new Error('Pick a start time.');
   const services = await privateServices();
