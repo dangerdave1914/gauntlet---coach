@@ -748,8 +748,10 @@ const utcZ = (iso, hhmmss, offset = '-06:00') =>
 /** "14:30:00" / "14:30" / "2:30 PM" / ISO -> { date, time label, mins } in gym time. */
 function apptWhen(b) {
   const sd = String(b.start_date || ''), st = String(b.start_time || '');
+  // Live format (probe): start_date "YYYY-MM-DDTHH:MM:SSZ" is the lesson's
+  // start in UTC; start_time "HH:MM". The timestamp is authoritative.
+  if (/T\d.*(Z|[+-]\d{2}:?\d{2})$/.test(sd)) return gymClock(sd);
   if (/T\d/.test(st)) return gymClock(st);
-  if (/T\d/.test(sd) && !st) return gymClock(sd);
   const date = sd.slice(0, 10);
   const m = st.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)?$/i);
   if (!m) return { date, time: st, mins: 9999 };
@@ -758,7 +760,7 @@ function apptWhen(b) {
   const label = `${(h % 12) || 12}:${String(mm).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
   return { date, time: label, mins: h * 60 + mm };
 }
-const cancelledBooking = b => b.is_active === false || /cancel|void|delete/i.test(String(b.status || ''));
+const cancelledBooking = b => b.is_active === false || /cancel|void|delete|no.?show/i.test(String(b.status || ''));
 
 let svcCache = null;
 async function privateServices() {
@@ -898,6 +900,8 @@ async function privates({ fresh = false, today } = {}) {
       minutes: Number(s.duration) > 300 ? Math.round(Number(s.duration) / 60) : Number(s.duration) || null,
       coachIds: (s.providers || []).map(p => String(p && typeof p === 'object' ? p.id : p)) })),
     coaches: svcCoaches, bookings: bookings.length,
+    counts: { live: lastBookings.length, upcoming: upcomingAll.length,
+              past: bookings.filter(b => !cancelledBooking(b)).length - upcomingAll.length },
     packUrl: PACK_URL || null, updatedAt: new Date().toISOString(),
   };
   privCache = { at: Date.now(), value };
@@ -913,6 +917,16 @@ async function privates({ fresh = false, today } = {}) {
  * API isn't documented publicly and its own records are the best spec.
  * Mariana Tek's error text is passed through word for word.
  */
+/** Gym-local date + HH:MM -> UTC "YYYY-MM-DDTHH:MM:SSZ", DST-correct for Chicago. */
+function chicagoToUtcZ(date, h, m) {
+  for (const off of ['-06:00', '-05:00']) {
+    const d = new Date(`${date}T${pad(h)}:${pad(m)}:00${off}`);
+    const c = gymClock(d.toISOString());
+    if (c.date === date && c.mins === h * 60 + m) return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+  throw new Error('Couldn\'t work out that time in Central time.');
+}
+
 function hhmm(t) { const m = String(t).match(/^(\d{1,2}):(\d{2})$/); return m ? [Number(m[1]), Number(m[2])] : null; }
 const pad = n => String(n).padStart(2, '0');
 
@@ -934,23 +948,27 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
   if (dur < 10 || dur > 240) throw new Error(`Service length looks wrong (${durRaw}). Not booking.`);
   const endMins = hm[0] * 60 + hm[1] + dur;
   if (endMins >= 1440) throw new Error('That lesson would run past midnight. Pick an earlier time.');
-  const withSecs = /:\d{2}:\d{2}$/.test(String(tpl.start_time || '')) || !tpl.start_time;
+  // Live bookings: start_time/end_time "HH:MM", start_date a UTC timestamp.
+  const withSecs = /:\d{2}:\d{2}$/.test(String(tpl.start_time || ''));
   const fmtT = (h, m) => `${pad(h)}:${pad(m)}${withSecs ? ':00' : ''}`;
+  const tsDates = !tpl.start_date || /T\d/.test(String(tpl.start_date));
+  const eh = Math.floor(endMins / 60), em = endMins % 60;
   const body = {
     service_id: sv.id,
     customer_id: String(uid),
     providers: [{ id: prov.id != null ? prov.id : prov, type: prov.type || 'employee' }],
     number_of_people: 1,
-    start_date: date, end_date: date,
-    start_time: fmtT(hm[0], hm[1]), end_time: fmtT(Math.floor(endMins / 60) % 24, endMins % 60),
+    start_date: tsDates ? chicagoToUtcZ(date, hm[0], hm[1]) : date,
+    end_date: tsDates ? chicagoToUtcZ(date, eh, em) : date,
+    start_time: fmtT(hm[0], hm[1]), end_time: fmtT(eh, em),
     duration: durRaw > 300 ? durRaw : dur * 60,      // back to seconds, as Mariana Tek stores it
     timezone: tpl.timezone || TZ,
     ...(tpl.location_id ? { location_id: tpl.location_id } : (sv.locations && sv.locations[0] ? { location_id: String(sv.locations[0].id || sv.locations[0]) } : { location_id: LOCATION })),
     // Never copy a repeating setting: the template may be a weekly series,
     // and a one-off booking must not become one. Only a clearly one-time
     // value is passed along; otherwise Mariana Tek's default applies.
-    ...(/^(none|single|once|no|one[-_ ]?time|non[-_ ]?recurring)$/i.test(String(tpl.recurrence_type || ''))
-      ? { recurrence_type: tpl.recurrence_type } : {}),
+    recurrence_type: 'NONE',          // every live booking is NONE; a one-off must never repeat
+    status: 'SCHEDULED',
   };
   let r;
   const t0 = Date.now();
