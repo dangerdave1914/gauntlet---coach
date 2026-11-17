@@ -365,7 +365,7 @@ async function probe(date) {
     const raw = async (path, params) => {
       const url = new URL(BASE + path);
       for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, v);
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' } });
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json' } });   // plain JSON gets a 406
       const text = await res.text();
       let json = null; try { json = JSON.parse(text); } catch {}
       return { status: res.status, json, text };
