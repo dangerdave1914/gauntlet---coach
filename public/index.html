@@ -1627,16 +1627,28 @@ function bookDialog() {
     const cname = clients.find(c => c.cid === cid)?.name || 'this client';
     if (!confirm(`Book ${cname} on ${shortDate(date)} at ${time}?`)) return;
     $('#bk-go').disabled = true; $('#bk-go').textContent = 'Booking…'; $('#bk-err').textContent = '';
+    let force = false;
     try {
+     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await fetch('/api/privates/book', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: me.email, cid, date, time, pid, serviceId: svc && svc.id }) });
+        body: JSON.stringify({ email: me.email, cid, date, time, pid, serviceId: svc && svc.id, force }) });
       const text = await r.text();
       let out;
       try { out = JSON.parse(text); }
       catch { throw new Error(`Server returned ${r.status} (${r.status === 504 || r.status === 502 ? 'timed out or restarted' : 'not JSON'}). Check Mariana Tek before trying again: the booking may have gone through.`); }
+      // Availability conflict: Mariana Tek created nothing. Offer the same
+      // override the desk uses; only an explicit yes sends it.
+      if (r.status === 409 && out.conflict && !force) {
+        if (!confirm(`${out.error}\n\nBook anyway? This overrides availability, like booking at the desk.`)) {
+          throw new Error(out.error + ' Not booked.');
+        }
+        force = true; continue;
+      }
       if (!r.ok || out.error) throw new Error(out.error || `Server returned ${r.status}`);
       $('#dlg').close();
       loadPrivates(true);
+      return;
+     }
     } catch (err) {
       $('#bk-err').textContent = err.message;
       $('#bk-go').disabled = false; $('#bk-go').textContent = 'Book';
