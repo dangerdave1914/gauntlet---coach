@@ -381,36 +381,58 @@ async function probe(date) {
     const svcAttr = x => x.attributes || x;
     out.appointmentServices = {
       status: svc.status, topKeys: keysOf(svc.json), count: services.length, item: itemShape(services[0]),
-      names: services.map(x => String(svcAttr(x).name || svcAttr(x).display_name || svcAttr(x).title || '')).filter(Boolean),
+      names: services.map(x => String(svcAttr(x).service_name || svcAttr(x).name || '')).filter(Boolean),
+      // How a provider (coach) is described: keys and the type value only.
+      providerShape: (() => { const p = (svcAttr(services[0] || {}).providers || [])[0];
+        return p && typeof p === 'object' ? { keys: Object.keys(p), type: p.type || p.provider_type || null } : (p == null ? null : typeof p); })(),
+      providerCounts: services.map(x => (svcAttr(x).providers || []).length),
       ids: services.map(x => x.id).filter(Boolean),
     };
-    const sid = services[0] && services[0].id;
-    const end = addDaysIso(date, 14);
-    const variants = [
-      {},
-      { start_date: date, end_date: end },
-      { min_date: date, max_date: end },
-      { start: date, end: end },
-      { date_from: date, date_to: end },
-      { start_datetime: date + 'T00:00:00', end_datetime: end + 'T23:59:59' },
-      ...(sid ? [{ service: sid, start_date: date, end_date: end }, { service_id: sid, start_date: date, end_date: end },
-                 { services: sid, start_date: date, end_date: end }] : []),
-      { location: LOCATION, start_date: date, end_date: end },
-    ];
-    out.appointmentTries = {};
-    for (const path of ['/appointments/bookings', '/appointments/availabilities', '/appointments/timeblocks', '/appointments/categories']) {
-      const tries = [];
-      for (const params of variants) {
-        const r = await raw(path, { ...params, page_size: 3 });
-        const list = listOf(r.json);
-        const t = { params: Object.keys(params).join(',') || '(none)', status: r.status };
-        if (r.status < 300) { t.topKeys = keysOf(r.json); t.count = list ? list.length : null; t.item = itemShape(list && list[0]); }
-        else t.error = errOf(r);
-        tries.push(t);
-        if (r.status < 300 && list && list.length) break;   // found a working spelling with data
+    // Round 3, using what Mariana Tek's errors told us:
+    //  bookings: start_date/end_date as UTC "YYYY-MM-DDTHH:MM:SSZ", no page_size
+    //  availabilities/timeblocks: provider_id + provider_type required
+    //  categories: per_page <= 25
+    const startZ = new Date(date + 'T00:00:00-06:00').toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const endZ = new Date(addDaysIso(date, 14) + 'T23:59:59-06:00').toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // Nested keys one level down, never values (bookings carry client info).
+    const deepKeys = x => {
+      if (!x || typeof x !== 'object') return null;
+      const o = {};
+      for (const [k, v] of Object.entries(x.attributes || x)) {
+        o[k] = Array.isArray(v) ? (v[0] && typeof v[0] === 'object' ? ['list of', Object.keys(v[0])] : `list(${v.length})`)
+          : v && typeof v === 'object' ? Object.keys(v) : (v === null ? 'null' : typeof v);
       }
-      out.appointmentTries[path] = tries;
-    }
+      return o;
+    };
+    const tryOne = async (path, params) => {
+      const r = await raw(path, params);
+      const list = listOf(r.json);
+      const t = { params: Object.keys(params).join(',') || '(none)', status: r.status };
+      if (r.status < 300) { t.topKeys = keysOf(r.json); t.count = list ? list.length : null; t.meta = r.json && r.json.meta ? keysOf(r.json.meta) : null; t.item = deepKeys(list && list[0]); }
+      else t.error = errOf(r);
+      return t;
+    };
+    out.appointmentTries = {};
+    out.appointmentTries.bookings = [
+      await tryOne('/appointments/bookings', { start_date: startZ, end_date: endZ }),
+      await tryOne('/appointments/bookings', { start_date: startZ }),
+    ];
+    out.appointmentTries.categories = [ await tryOne('/appointments/categories', { per_page: 25 }) ];
+    // First provider on the first service.
+    const prov = (svcAttr(services[0] || {}).providers || [])[0];
+    const pid = prov && typeof prov === 'object' ? (prov.id || prov.provider_id) : prov;
+    const ptypes = [...new Set([prov && (prov.type || prov.provider_type), 'employee', 'employees', 'instructor', 'Employee'].filter(Boolean))];
+    out.appointmentTries.availabilities = [];
+    out.appointmentTries.timeblocks = [];
+    if (pid != null) {
+      for (const pt of ptypes) {
+        const a = await tryOne('/appointments/availabilities', { provider_id: pid, provider_type: pt, start_date: startZ, end_date: endZ });
+        a.providerType = pt; out.appointmentTries.availabilities.push(a);
+        const b = await tryOne('/appointments/timeblocks', { provider_id: pid, provider_type: pt, start_date: startZ, end_date: endZ });
+        b.providerType = pt; out.appointmentTries.timeblocks.push(b);
+        if (a.status < 300 || b.status < 300) break;
+      }
+    } else out.appointmentTries.note = 'No provider on the first service — check that a coach is assigned to it in Mariana Tek.';
     // Common sub-paths, in case the directory doesn't name them.
     for (const sub of ['/appointments/appointments', '/appointments/bookings', '/appointments/slots', '/appointments/services', '/appointments/availability', '/appointments/sessions']) {
       try {
