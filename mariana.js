@@ -357,6 +357,60 @@ async function probe(date) {
         } catch (e) { out.appointmentsFollow[k] = { path, ok: false, error: e.message.replace(/^Mariana Tek /, '') }; }
       }
     } catch (e) { out.appointmentsRoot = { error: e.message }; }
+
+    // Appointments speak a different dialect: plain objects, not JSON:API,
+    // and some lists need parameters (422 = validation). Read raw, keep
+    // the validation message (it names the missing field), and try the
+    // usual date/service parameter spellings.
+    const raw = async (path, params) => {
+      const url = new URL(BASE + path);
+      for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, v);
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' } });
+      const text = await res.text();
+      let json = null; try { json = JSON.parse(text); } catch {}
+      return { status: res.status, json, text };
+    };
+    const keysOf = v => v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v) : null;
+    const listOf = j => Array.isArray(j) ? j : j && Array.isArray(j.data) ? j.data : j && Array.isArray(j.results) ? j.results : null;
+    // Error text, but only keys/messages: validation bodies name fields, not people.
+    const errOf = r => r.json ? JSON.stringify(r.json).slice(0, 400) : r.text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160);
+    const itemShape = x => !x ? null : x.attributes ? { keys: Object.keys(x), attributes: Object.keys(x.attributes) } : { keys: Object.keys(x) };
+
+    const svc = await raw('/appointments/services', { page_size: 10 });
+    const services = listOf(svc.json) || [];
+    const svcAttr = x => x.attributes || x;
+    out.appointmentServices = {
+      status: svc.status, topKeys: keysOf(svc.json), count: services.length, item: itemShape(services[0]),
+      names: services.map(x => String(svcAttr(x).name || svcAttr(x).display_name || svcAttr(x).title || '')).filter(Boolean),
+      ids: services.map(x => x.id).filter(Boolean),
+    };
+    const sid = services[0] && services[0].id;
+    const end = addDaysIso(date, 14);
+    const variants = [
+      {},
+      { start_date: date, end_date: end },
+      { min_date: date, max_date: end },
+      { start: date, end: end },
+      { date_from: date, date_to: end },
+      { start_datetime: date + 'T00:00:00', end_datetime: end + 'T23:59:59' },
+      ...(sid ? [{ service: sid, start_date: date, end_date: end }, { service_id: sid, start_date: date, end_date: end },
+                 { services: sid, start_date: date, end_date: end }] : []),
+      { location: LOCATION, start_date: date, end_date: end },
+    ];
+    out.appointmentTries = {};
+    for (const path of ['/appointments/bookings', '/appointments/availabilities', '/appointments/timeblocks', '/appointments/categories']) {
+      const tries = [];
+      for (const params of variants) {
+        const r = await raw(path, { ...params, page_size: 3 });
+        const list = listOf(r.json);
+        const t = { params: Object.keys(params).join(',') || '(none)', status: r.status };
+        if (r.status < 300) { t.topKeys = keysOf(r.json); t.count = list ? list.length : null; t.item = itemShape(list && list[0]); }
+        else t.error = errOf(r);
+        tries.push(t);
+        if (r.status < 300 && list && list.length) break;   // found a working spelling with data
+      }
+      out.appointmentTries[path] = tries;
+    }
     // Common sub-paths, in case the directory doesn't name them.
     for (const sub of ['/appointments/appointments', '/appointments/bookings', '/appointments/slots', '/appointments/services', '/appointments/availability', '/appointments/sessions']) {
       try {
