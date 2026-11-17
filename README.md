@@ -123,6 +123,23 @@ each member's count and their roadmap tier (WHITE under 15, BLUE 15–49, BLACK
 Tune with `MILESTONES`, `MILESTONE_WINDOW_DAYS` and `MILESTONE_LEAD`. The list
 rebuilds in the background every 30 minutes.
 
+### Check-in
+
+On today's rosters, tap a booked name → confirm → Mariana Tek marks them
+checked in (and they move one class toward their milestone). This is the
+app's only write to Mariana Tek. It needs the API key to have check-in
+permission; a read-only key gets a plain "doesn't have check-in permission"
+message. Only reservations already shown on a loaded roster can be checked in.
+
+### Private lessons
+
+Members → Privates lists everyone with a private in the last 30 days or next
+14: next and last lesson, coach, and lessons left in their pack, flagged
+**Renew** at 2 or fewer (`PRIVATE_LOW`). Privates are found by class name
+(`MT_PRIVATE_MATCH`, default "private"); pack balances come from
+`MT_CREDITS_PATH` (default `/credits`). Coaches see their own clients,
+matched by name between Mariana Tek and the Staff tab; schedulers see all.
+
 First run: after setting `MT_API_KEY`, open
 `/api/members/probe?email=<a scheduler's email>`. It returns field **names**
 only (no member data), which shows whether the date and class_session filters

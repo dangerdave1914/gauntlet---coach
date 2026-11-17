@@ -17,6 +17,11 @@
  *   MILESTONES           (optional) defaults to 25,50,100,200,300,400,500
  *   MILESTONE_WINDOW_DAYS (optional) how far ahead to look, default 14
  *   MILESTONE_LEAD       (optional) list anyone this close even if not booked that far, default 5
+ *   MT_PRIVATE_MATCH     (optional) regex for private-lesson class names, default "private"
+ *   PRIVATE_LOW          (optional) lessons left that triggers the renewal flag, default 2
+ *   MT_CREDITS_PATH      (optional) where lesson-pack balances live, default /credits
+ *   MT_SESSION_INCLUDE   (optional) e.g. employee_public_profiles, for instructor names
+ *   MT_CHECKIN_PATHS     (optional) check-in endpoint suffixes to try, default check_in,check-in
  *   TV_URL               (optional) the lobby TV Worker. Defaults to
  *                        https://gauntlet-bingo.dangerdave1914.workers.dev
  *   PORT                 (App Platform sets this automatically)
@@ -1415,6 +1420,55 @@ if (mariana.enabled()) {
   setTimeout(refreshMiles, 15 * 1000);
   setInterval(refreshMiles, 30 * 60 * 1000);
 }
+
+/** A coach taps a booked name on a roster. Staff only; the reservation must
+ *  be one the app has already shown, so this can't touch anything else. */
+app.post('/api/checkin', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.status(400).json({ error: 'Mariana Tek isn\'t connected.' });
+    const email = String(req.body.email || '').toLowerCase().trim();
+    await warm();
+    if (!isStaff(email)) return res.status(403).json({ error: 'Register as staff to check members in.' });
+    const me = (cache.staff || []).find(s => s.email === email);
+    const r = await mariana.checkIn(req.body.rid);
+    console.log(`check-in ${req.body.rid} by ${me ? me.name : email}${r.already ? ' (already in)' : ''}`);
+    res.json(r);
+  } catch (e) {
+    console.error('checkin:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
+
+/** Does "Paul Shunnarah" (Mariana Tek) name the same person as "Boulos Paul
+ *  Shunnarah" (Staff tab)? Yes if every word of the shorter is in the longer. */
+function sameCoach(a, b) {
+  const w = x => String(x || '').toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean);
+  const [s, l] = [w(a), w(b)].sort((x, y) => x.length - y.length);
+  return s.length > 0 && s.every(t => l.includes(t));
+}
+
+/** Private-lesson clients and their pack balances. Coaches see their own
+ *  clients; schedulers and confirmers see everyone's. */
+app.get('/api/privates', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.json({ enabled: false });
+    const email = String(req.query.email || '').toLowerCase().trim();
+    await warm();
+    const me = (cache.staff || []).find(s => s.email === email);
+    if (!me) return res.status(403).json({ error: 'Register as staff to see private lessons.' });
+    const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
+    const d = await mariana.privates({ fresh: req.query.fresh === '1', today: gymToday() });
+    const anyCoachKnown = d.clients.some(c => c.coaches.length);
+    // If Mariana Tek isn't telling us who teaches, filtering would hide
+    // everything — show all and say so instead.
+    const clients = all || !anyCoachKnown ? d.clients
+      : d.clients.filter(c => c.coaches.some(n => sameCoach(n, me.name)));
+    res.json({ enabled: true, ...d, clients, scope: all ? 'all' : anyCoachKnown ? 'mine' : 'all-unknown-coach' });
+  } catch (e) {
+    console.error('privates:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
 
 /** Field names only, for wiring up against the live API. Schedulers only. */
 app.get('/api/members/probe', async (req, res) => {

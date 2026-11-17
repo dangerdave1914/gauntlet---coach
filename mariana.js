@@ -43,6 +43,19 @@ async function get(path, params = {}) {
   catch { throw new Error(`Mariana Tek returned non-JSON on ${path}`); }
 }
 
+/** The only write this app makes. JSON:API bodies, same auth as reads. */
+async function post(path, body = {}) {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json',
+               'Content-Type': 'application/vnd.api+json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json = null; try { json = text ? JSON.parse(text) : null; } catch {}
+  return { status: res.status, ok: res.ok, json, text: text.slice(0, 300) };
+}
+
 /** Follows links.next so a busy day doesn't get cut off at page one. */
 async function getAll(path, params = {}) {
   let body = await get(path, params);
@@ -123,9 +136,18 @@ function isFirstVisit(res, user) {
   return typeof n === 'number' && n === 0;
 }
 
+// Set to e.g. "employee_public_profiles" once the probe shows that include
+// works; until then instructor names come from attributes when present.
+const SESSION_INCLUDE = (process.env.MT_SESSION_INCLUDE || '').trim();
+
 async function sessionsFor(date) {
+  return (await sessionsRange(date, date)).filter(s => s.date === date);
+}
+
+async function sessionsRange(min, max) {
   const { data, included } = await getAll('/class_sessions', {
-    location: LOCATION, min_date: date, max_date: date, page_size: 100,
+    location: LOCATION, min_date: min, max_date: max, page_size: 100,
+    include: SESSION_INCLUDE || undefined,
   });
   const idx = indexIncluded(included);
   return data.map(s => {
@@ -140,14 +162,15 @@ async function sessionsFor(date) {
       mins: clock.mins,
       name: first(a, 'class_name', 'name', 'class_type_name') || 'Class',
       capacity: first(a, 'capacity', 'standard_capacity'),
-      instructor: instructor ? first(instructor.attributes, 'name', 'display_name') : first(a, 'instructor_name'),
+      instructor: instructor ? first(instructor.attributes, 'name', 'display_name')
+        : (first(a, 'instructor_name', 'instructor_names', 'employee_name') || null),
       cancelled: a.is_cancelled === true,
     };
   })
   // Don't trust the date filter's edges (inclusive or not, which timezone):
-  // keep only what actually starts on this gym-local date.
-  .filter(s => s.date === date)
-  .sort((x, y) => x.mins - y.mins);
+  // keep only what actually starts inside the range, in gym-local dates.
+  .filter(s => s.date && s.date >= min && s.date <= max)
+  .sort((x, y) => x.date.localeCompare(y.date) || x.mins - y.mins);
 }
 
 async function rosterFor(sessionId) {
@@ -163,7 +186,7 @@ async function rosterFor(sessionId) {
       const user = rel(r, 'user', idx);
       const uid = relId(r, 'user') || null;
       if (uid && user) userCountFromAttrs(uid, user);
-      return { uid, name: displayName(user, r), status: statusOf(r), firstVisit: isFirstVisit(r, user) };
+      return { rid: String(r.id), uid, name: displayName(user, r), status: statusOf(r), firstVisit: isFirstVisit(r, user) };
     })
     .filter(p => p.status !== 'cancelled')
     .sort((a, b) => (b.firstVisit - a.firstVisit) || a.name.localeCompare(b.name));
@@ -173,6 +196,9 @@ async function rosterFor(sessionId) {
  * the pane at 5:10 shouldn't be six rounds of API calls. */
 const cache = new Map();
 const TTL = 2 * 60 * 1000;
+// Reservations the app has actually shown a coach. Check-in only accepts
+// these, so the endpoint can't be pointed at an arbitrary reservation ID.
+const known = new Map();   // rid -> { uid, date, status }
 
 async function day(date, { fresh = false } = {}) {
   const hit = cache.get(date);
@@ -188,6 +214,7 @@ async function day(date, { fresh = false } = {}) {
     p.classes = n == null ? null : n;
     p.tier = n == null ? null : tierFor(n);
     p.nextMilestone = n == null ? null : nextMilestone(n);
+    if (p.rid) known.set(p.rid, { uid: p.uid, date, status: p.status });
     delete p.uid;                      // Mariana Tek's user IDs stay on the server
   }
   const value = {
@@ -247,6 +274,30 @@ async function probe(date) {
         };
       }
     }
+    // Class names over the next two weeks, so MT_PRIVATE_MATCH can be set
+    // to whatever Mariana Tek actually calls a private.
+    const span = await get('/class_sessions', { location: LOCATION, min_date: date, max_date: addDaysIso(date, 14), page_size: 100 });
+    const names = [...new Set((span.data || []).map(x => first(x.attributes || {}, 'class_name', 'name')).filter(Boolean))];
+    // Private names can carry the client's name, so those are counted, not listed.
+    out.classNames = names.filter(n => !PRIVATE_MATCH.test(n)).sort();
+    out.privateMatch = { pattern: PRIVATE_MATCH.source, matchingClassNames: names.filter(n => PRIVATE_MATCH.test(n)).length };
+    // Does the instructor include work? (400 = no; that's fine.)
+    try {
+      const inc = await get('/class_sessions', { location: LOCATION, min_date: date, max_date: date, page_size: 1, include: 'employee_public_profiles' });
+      out.instructorInclude = { ok: true, includedTypes: [...new Set((inc.included || []).map(x => x.type))],
+        sample: shape((inc.included || [])[0]) };
+    } catch (e) { out.instructorInclude = { ok: false, error: e.message }; }
+    // Lesson-pack balances: where they live and what they're called.
+    const someUid = id && out.reservations && (await get('/reservations', { class_session: id, include: 'user', page_size: 1 }))
+      .data.map(x => relId(x, 'user')).find(Boolean);
+    if (someUid) {
+      try {
+        const cr = await get(CREDITS_PATH, { user: someUid, page_size: 5 });
+        out.credits = { path: CREDITS_PATH, count: (cr.data || []).length, sample: shape((cr.data || [])[0]),
+          filterHeld: (cr.data || []).every(x => !relId(x, 'user') || String(relId(x, 'user')) === String(someUid)) };
+      } catch (e) { out.credits = { path: CREDITS_PATH, error: e.message }; }
+    }
+    out.checkIn = 'Not probed — it would change a real record. The first tap in the app will report whether it works.';
   } catch (e) { out.error = e.message; }
   return out;
 }
@@ -365,4 +416,125 @@ async function milestones({ fresh = false, today } = {}) {
   return value;
 }
 
-module.exports = { enabled, day, probe, milestones };
+/* ------------------------------------------------------------ check-in */
+
+/**
+ * Marks one reservation checked in. Mariana Tek documents
+ * POST /reservations/{id}/cancel; check-in is assumed to follow the same
+ * pattern. A 404/405 means the path is wrong (safe to try the next), and is
+ * reported rather than guessed past.
+ */
+const CHECKIN_PATHS = (process.env.MT_CHECKIN_PATHS || 'check_in,check-in').split(',').map(x => x.trim()).filter(Boolean);
+
+async function checkIn(rid) {
+  rid = String(rid || '');
+  const r = known.get(rid);
+  if (!r) throw new Error('That reservation isn\'t on a roster the app has loaded. Refresh and try again.');
+  if (r.status === 'in') return { ok: true, already: true };
+  let last;
+  for (const suffix of CHECKIN_PATHS) {
+    last = await post(`/reservations/${encodeURIComponent(rid)}/${suffix}`);
+    if (last.ok) break;
+    if (last.status !== 404 && last.status !== 405) break;
+  }
+  if (!last.ok) {
+    if (last.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have check-in permission. Ask integrations@marianatek.com to add it.');
+    if (last.status === 404 || last.status === 405) throw new Error('Mariana Tek has no check-in endpoint where the app looked. Check in at the desk for now.');
+    const msg = last.json && last.json.errors && last.json.errors[0] && (last.json.errors[0].detail || last.json.errors[0].title);
+    throw new Error(`Mariana Tek ${last.status}${msg ? ': ' + msg : ''}`);
+  }
+  r.status = 'in';
+  cache.delete(r.date);                          // roster shows it on next load
+  if (r.uid) {                                   // one more class toward their milestone
+    const c = counts.get(String(r.uid));
+    if (c && c.source === 'history') c.n += 1;
+  }
+  mileCache = null;
+  return { ok: true };
+}
+
+/* ------------------------------------------------------------ privates */
+
+/**
+ * Private lessons are Mariana Tek class sessions whose name matches
+ * PRIVATE_MATCH, paid from a lesson pack (credits). For each client: their
+ * recent and upcoming privates, who teaches them, and what's left in the pack.
+ * Two lessons left or fewer = time to talk renewal.
+ */
+const PRIVATE_MATCH = new RegExp(process.env.MT_PRIVATE_MATCH || 'private', 'i');
+const PRIVATE_LOW = Number(process.env.PRIVATE_LOW || 2);
+const CREDITS_PATH = process.env.MT_CREDITS_PATH || '/credits';
+let privCache = null;
+const PRIV_TTL = 10 * 60 * 1000;
+
+/** Lessons left in a client's private pack, or null if Mariana Tek won't say. */
+async function packFor(uid) {
+  const { data } = await getAll(CREDITS_PATH, { user: uid, page_size: 100 });
+  const mine = data.filter(c => !relId(c, 'user') || String(relId(c, 'user')) === String(uid));
+  const label = c => String(first(c.attributes || {}, 'name', 'credit_name', 'product_name', 'payment_option_name', 'description') || '');
+  const priv = mine.filter(c => PRIVATE_MATCH.test(label(c)));
+  const pool = priv.length ? priv : [];
+  if (!pool.length) return { left: null, packs: 0, expires: null, label: null };
+  let left = 0, expires = null;
+  for (const c of pool) {
+    const a = c.attributes || {};
+    const n = first(a, 'remaining_count', 'credits_remaining', 'remaining', 'count_remaining', 'remaining_credits');
+    if (typeof n === 'number') left += n;
+    const e = first(a, 'expiration_datetime', 'expiration_date', 'expires_at', 'expiry_date');
+    if (e && (!expires || e < expires)) expires = e;
+  }
+  return { left, packs: pool.length, expires: expires ? String(expires).slice(0, 10) : null, label: label(pool[0]) };
+}
+
+async function privates({ fresh = false, today } = {}) {
+  if (!fresh && privCache && Date.now() - privCache.at < PRIV_TTL) return privCache.value;
+  today = today || new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
+  const from = addDaysIso(today, -30), to = addDaysIso(today, 14);
+
+  const sessions = (await sessionsRange(from, to)).filter(s => PRIVATE_MATCH.test(s.name) && !s.cancelled);
+  const clients = new Map();   // uid -> { name, coaches:Set, lessons:[] }
+  for (const s of sessions) {
+    let roster; try { roster = await rosterFor(s.id); } catch { continue; }
+    for (const p of roster) {
+      const key = p.uid || 'guest:' + p.name;
+      const c = clients.get(key) || { uid: p.uid, name: p.name, coaches: new Set(), lessons: [] };
+      if (s.instructor) c.coaches.add(s.instructor);
+      c.lessons.push({ date: s.date, time: s.time, coach: s.instructor, status: p.status, upcoming: s.date >= today && p.status !== 'in' });
+      clients.set(key, c);
+    }
+  }
+
+  const list = [...clients.values()];
+  // Pack balances, a few at a time.
+  const queue = list.filter(c => c.uid);
+  let packError = null;
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (queue.length) {
+      const c = queue.shift();
+      try { c.pack = await packFor(c.uid); } catch (e) { c.pack = null; packError = packError || e.message; }
+    }
+  }));
+
+  const out = list.map(c => {
+    const upcoming = c.lessons.filter(l => l.upcoming).length;
+    const done = c.lessons.filter(l => l.status === 'in').length;
+    const left = c.pack ? c.pack.left : null;
+    // Lessons already booked come out of the pack too, so what's really
+    // unclaimed is left minus booked — when Mariana Tek doesn't already
+    // deduct at booking. Shown as-is; the flag uses the raw balance.
+    return {
+      name: c.name, coaches: [...c.coaches],
+      lastLesson: c.lessons.filter(l => l.status === 'in').map(l => l.date).sort().pop() || null,
+      nextLesson: c.lessons.filter(l => l.upcoming).sort((a, b) => a.date.localeCompare(b.date))[0] || null,
+      upcoming, doneLast30: done,
+      left, expires: c.pack ? c.pack.expires : null, packLabel: c.pack ? c.pack.label : null,
+      renew: left != null && left <= PRIVATE_LOW,
+    };
+  }).sort((a, b) => (b.renew - a.renew) || ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
+
+  const value = { from, to, low: PRIVATE_LOW, clients: out, packError, sessions: sessions.length, updatedAt: new Date().toISOString() };
+  privCache = { at: Date.now(), value };
+  return value;
+}
+
+module.exports = { enabled, day, probe, milestones, checkIn, privates };

@@ -316,6 +316,10 @@ input[type=text],input[type=date]{
 .roster li.new::after{content:' NEW';font-size:.75em;font-weight:700;color:var(--warn)}
 .count{font-size:calc(12px * var(--fs));color:var(--chalk);margin-top:2px}
 .roster li small{font-size:.78em;opacity:.7;margin-left:4px}
+.roster li.tap{cursor:pointer}
+.roster li.tap:active{background:var(--blue);border-color:var(--blue)}
+.roster li.busy{opacity:.5;pointer-events:none}
+.mile .kind{font:600 calc(11px * var(--fs)) 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.1em;padding:2px 7px;border-radius:5px;background:rgba(242,180,65,.18);color:var(--warn);vertical-align:2px}
 .roster li.near{border-color:#E3B341;color:#E3B341}
 .roster li.in.near{color:#fff;box-shadow:inset 0 0 0 2px #E3B341}
 .mile{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
@@ -1424,19 +1428,21 @@ $('#btn-post').addEventListener('click', () => {
  * The day's classes from Mariana Tek with who's booked. Blue = checked in,
  * outlined NEW = first visit (those are WHITE-tier people), dashed = waitlist.
  * Follows the day picker, same as Combos and Workout. */
-const members = { data: null, miles: null };
+const members = { data: null, miles: null, priv: null, view: 'classes' };
 
 async function loadMembers(fresh) {
   const pane = $('#pane-members');
   if (!me.email) { pane.innerHTML = '<p class="empty">Register as staff (Settings) to see who\'s booked.</p>'; return; }
-  pane.innerHTML = '<p class="empty">Loading rosters…</p>';
+  // Keep the last roster on screen while refreshing (a check-in shouldn't
+  // blank the pane); only a different day starts from "Loading".
+  if (!members.data || members.data.date !== state.date) { members.data = null; renderMembers(); }
   try {
     const r = await fetch(`/api/members?date=${state.date}&email=${encodeURIComponent(me.email)}${fresh ? '&fresh=1' : ''}`);
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || `Server returned ${r.status}`);
     members.data = d;
   } catch (e) {
-    pane.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+    if (members.view === 'classes') pane.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
     return;
   }
   renderMembers();
@@ -1472,14 +1478,28 @@ function milesHtml() {
 }
 
 function renderMembers() {
-  const d = members.data, pane = $('#pane-members');
+  const pane = $('#pane-members');
+  const tog = `<div class="viewtog" id="memtog">
+      <button data-mv="classes" aria-pressed="${members.view === 'classes'}">Classes</button>
+      <button data-mv="privates" aria-pressed="${members.view === 'privates'}">Privates</button>
+    </div>`;
+  if (members.view === 'privates') { pane.innerHTML = tog + privatesHtml(); return; }
+
+  const d = members.data;
+  if (!d) { pane.innerHTML = tog + '<p class="empty">Loading rosters…</p>'; return; }
   if (!d.enabled) { pane.innerHTML = '<p class="empty">Mariana Tek isn\'t connected yet.</p>'; return; }
   const label = { in: 'Checked in', noshow: 'No-show', waitlist: 'Waitlist', booked: 'Booked' };
+  // Check-in is for today's classes only — tapping a name on next Tuesday's
+  // roster would mark someone present for a class that hasn't happened.
+  const canCheckIn = d.date === TODAY;
   const cards = (d.classes || []).map(c => {
     const people = c.people.length
-      ? `<ul class="roster">${c.people.map(p =>
-          `<li class="${p.status}${p.firstVisit ? ' new' : ''}${p.nextMilestone && p.nextMilestone - p.classes <= 3 ? ' near' : ''}"
-             title="${[label[p.status], p.tier ? p.tier + ' tier' : '', p.classes != null ? p.classes + ' classes' : ''].filter(Boolean).join(' · ')}">${esc(p.name)}${p.classes != null ? `<small>${p.classes}</small>` : ''}</li>`).join('')}</ul>`
+      ? `<ul class="roster">${c.people.map(p => {
+          const tap = canCheckIn && p.status === 'booked' && p.rid;
+          return `<li class="${p.status}${p.firstVisit ? ' new' : ''}${p.nextMilestone && p.nextMilestone - p.classes <= 3 ? ' near' : ''}${tap ? ' tap' : ''}"
+             ${tap ? `data-rid="${esc(p.rid)}" data-name="${esc(p.name)}" role="button" tabindex="0"` : ''}
+             title="${[label[p.status], p.tier ? p.tier + ' tier' : '', p.classes != null ? p.classes + ' classes' : ''].filter(Boolean).join(' · ')}">${esc(p.name)}${p.classes != null ? `<small>${p.classes}</small>` : ''}</li>`;
+        }).join('')}</ul>`
       : '<p class="empty" style="margin:8px 0 0">Nobody booked yet.</p>';
     const counts = [
       `${c.booked}${c.capacity ? '/' + c.capacity : ''} booked`,
@@ -1493,13 +1513,88 @@ function renderMembers() {
     </div>`;
   }).join('') || '<p class="empty">No classes in Mariana Tek this day.</p>';
   const synced = new Date(d.updatedAt);
-  pane.innerHTML = `<div class="datenav"><div class="label">${esc(pretty(new Date(d.date + 'T12:00:00')))}</div>
+  pane.innerHTML = tog + `<div class="datenav"><div class="label">${esc(pretty(new Date(d.date + 'T12:00:00')))}</div>
       <button id="mem-refresh" aria-label="Refresh">↻</button></div>
     ${milesHtml()}
+    ${canCheckIn && (d.classes || []).some(c => c.people.some(p => p.status === 'booked')) ? '<p class="empty" style="margin:-4px 0 10px">Tap a name to check them in.</p>' : ''}
     ${cards}
     <p class="empty" style="margin-top:10px">From Mariana Tek · ${isNaN(synced) ? '' : synced.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>`;
-  $('#mem-refresh').onclick = () => loadMembers(true);
 }
+
+/* ---------- private lessons ----------
+ * Clients with privates in the last 30 days or next 14, their pack balance
+ * from Mariana Tek, and a renewal flag at 2 lessons left or fewer. */
+async function loadPrivates(fresh) {
+  members.priv = members.priv && !fresh ? members.priv : null;
+  if (members.view === 'privates') renderMembers();
+  try {
+    const r = await fetch(`/api/privates?email=${encodeURIComponent(me.email)}${fresh ? '&fresh=1' : ''}`);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `Server returned ${r.status}`);
+    members.priv = d;
+  } catch (e) { members.priv = { error: e.message }; }
+  if (members.view === 'privates') renderMembers();
+}
+
+const shortDate = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+function privatesHtml() {
+  const d = members.priv;
+  if (!d) return '<p class="empty">Loading private lessons…</p>';
+  if (d.error) return `<p class="empty">${esc(d.error)}</p>`;
+  if (!d.enabled) return '<p class="empty">Mariana Tek isn\'t connected yet.</p>';
+  const scope = d.scope === 'mine' ? 'Your private clients'
+    : d.scope === 'all' ? 'All private clients' : 'All private clients (Mariana Tek isn\'t saying who teaches each one)';
+  const renew = d.clients.filter(c => c.renew).length;
+  const rows = d.clients.map(c => {
+    const bal = c.left == null ? '<span class="when">pack: ?</span>'
+      : `<span class="m" style="color:${c.renew ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left</div>`;
+    const lines = [
+      c.nextLesson ? `Next: ${esc(shortDate(c.nextLesson.date))} · ${esc(c.nextLesson.time)}` : 'Nothing booked',
+      c.lastLesson ? `Last: ${esc(shortDate(c.lastLesson))}` : '',
+      c.coaches.length && d.scope !== 'mine' ? esc(c.coaches.join(', ')) : '',
+      c.expires ? `Pack expires ${esc(shortDate(c.expires))}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="mile"><div><b>${esc(c.name)}</b>${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
+        <div class="when">${lines}</div></div><div style="text-align:right">${bal}</div></div>`;
+  }).join('');
+  return `<div class="datenav"><div class="label">${esc(scope)}</div>
+      <button id="priv-refresh" aria-label="Refresh">↻</button></div>
+    ${renew ? `<p class="empty" style="margin:-4px 0 10px;color:var(--warn);font-style:normal">${renew} client${renew > 1 ? 's' : ''} at ${d.low} lessons or fewer: time to talk renewal.</p>` : ''}
+    ${d.packError ? `<p class="empty">Pack balances unavailable: ${esc(d.packError)}</p>` : ''}
+    <div class="miles" style="border-color:var(--line)">${rows || '<p class="empty" style="margin:8px 0">No private lessons in the last 30 days or next 14.</p>'}</div>
+    <p class="empty">Privates from the last 30 days and next 14, from Mariana Tek.</p>`;
+}
+
+/* One delegated handler for the whole pane: view switch, refresh, check-in. */
+$('#pane-members').addEventListener('click', async e => {
+  const v = e.target.closest('#memtog button');
+  if (v) {
+    members.view = v.dataset.mv; renderMembers();
+    if (members.view === 'privates' && !members.priv) loadPrivates();
+    return;
+  }
+  if (e.target.closest('#mem-refresh')) return loadMembers(true);
+  if (e.target.closest('#priv-refresh')) return loadPrivates(true);
+
+  const chip = e.target.closest('li.tap[data-rid]');
+  if (!chip || chip.classList.contains('busy')) return;
+  if (!confirm(`Check in ${chip.dataset.name}?`)) return;
+  chip.classList.add('busy');
+  try {
+    const r = await fetch('/api/checkin', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: me.email, rid: chip.dataset.rid }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `Server returned ${r.status}`);
+    chip.classList.remove('booked', 'tap'); chip.classList.add('in');
+    loadMembers(true);
+  } catch (err) {
+    chip.classList.remove('busy');
+    alert(err.message);
+  }
+});
 
 const sched = { date: new Date(), slots: [], staff: [], events: [], view: 'day', week: null };
 const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
