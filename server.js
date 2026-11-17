@@ -1489,8 +1489,10 @@ app.post('/api/privates/book', async (req, res) => {
     const me = (cache.staff || []).find(s => s.email === email);
     if (!me) return res.status(403).json({ error: 'Register as staff to book privates.' });
     const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
-    const d = await mariana.privates({ today: gymToday() });
-    const myPid = mariana.coachIdFor(me.name, d.coaches, sameCoach);
+    const t0 = Date.now();
+    const coaches = await mariana.privateCoaches(gymToday());   // cheap; not the full Privates rebuild
+    console.log(`book private: coaches in ${Date.now() - t0}ms`);
+    const myPid = mariana.coachIdFor(me.name, coaches, sameCoach);
     const pid = String(req.body.pid || myPid || '');
     if (!all && pid !== String(myPid)) {
       return res.status(403).json({ error: myPid ? 'You can only book your own privates.' :

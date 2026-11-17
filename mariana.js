@@ -946,11 +946,19 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     duration: durRaw > 300 ? durRaw : dur * 60,      // back to seconds, as Mariana Tek stores it
     timezone: tpl.timezone || TZ,
     ...(tpl.location_id ? { location_id: tpl.location_id } : (sv.locations && sv.locations[0] ? { location_id: String(sv.locations[0].id || sv.locations[0]) } : { location_id: LOCATION })),
-    ...(tpl.recurrence_type ? { recurrence_type: tpl.recurrence_type } : {}),
+    // Never copy a repeating setting: the template may be a weekly series,
+    // and a one-off booking must not become one. Only a clearly one-time
+    // value is passed along; otherwise Mariana Tek's default applies.
+    ...(/^(none|single|once|no|one[-_ ]?time|non[-_ ]?recurring)$/i.test(String(tpl.recurrence_type || ''))
+      ? { recurrence_type: tpl.recurrence_type } : {}),
   };
   let r;
-  try { r = await appt('/appointments/bookings', {}, { method: 'POST', body }); }
+  const t0 = Date.now();
+  console.log('book private: POST start', JSON.stringify({ ...body, customer_id: '…' }));
+  try { r = await appt('/appointments/bookings', {}, { method: 'POST', body }); console.log(`book private: POST ok in ${Date.now() - t0}ms`); }
   catch (e) {
+    console.log(`book private: POST failed in ${Date.now() - t0}ms: ${e.message}`);
+    if (e.name === 'TimeoutError' || /aborted|timeout/i.test(e.message)) throw new Error('Mariana Tek didn\'t answer within 20 seconds. Check Mariana Tek before trying again: the booking may have gone through.');
     if (e.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have permission to create appointment bookings. Ask integrations@marianatek.com to add it.');
     throw new Error(e.message.replace(/ on \/appointments\/bookings/, ''));
   }
@@ -959,10 +967,24 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
   return { ok: true, booking: made.id != null ? String(made.id) : null };
 }
 
+/** Coaches on the private services, named — without rebuilding the whole
+ *  Privates list (that's dozens of calls; booking must stay fast). */
+async function privateCoaches(today) {
+  if (privCache && privCache.value && privCache.value.coaches) return privCache.value.coaches;
+  const services = await privateServices();
+  await loadCoachNames(today);
+  const out = [];
+  for (const sv of services) for (const p of sv.providers || []) {
+    const id = String(p && typeof p === 'object' ? p.id : p);
+    if (!out.some(x => x.pid === id)) out.push({ pid: id, type: (p && p.type) || 'employee', name: coachNames.get(id) || await coachName(id) });
+  }
+  return out;
+}
+
 /** Which Mariana Tek coach (employee id) is this staff member? By name. */
 function coachIdFor(staffName, coaches, same) {
   const hit = (coaches || []).find(c => c.name && same(c.name, staffName));
   return hit ? hit.pid : null;
 }
 
-module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, coachIdFor };
+module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, coachIdFor, privateCoaches };
