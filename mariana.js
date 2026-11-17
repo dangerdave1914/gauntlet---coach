@@ -977,6 +977,22 @@ function chicagoToUtcZ(date, h, m) {
 function hhmm(t) { const m = String(t).match(/^(\d{1,2}):(\d{2})$/); return m ? [Number(m[1]), Number(m[2])] : null; }
 const pad = n => String(n).padStart(2, '0');
 
+/**
+ * One participant, the client, mirroring the gym's own 21 bookings (probe):
+ * is_guest false and every payment field null — Mariana Tek doesn't attach
+ * the pack at booking. Email copies the template's habit: if existing
+ * bookings carry an empty string, so does this; otherwise the client's own.
+ */
+async function participantFor(uid, tpl) {
+  const tp = (tpl && tpl.metadata && Array.isArray(tpl.metadata.participants) && tpl.metadata.participants[0]) || null;
+  let email = '';
+  if (!tp || (tp.email != null && String(tp.email).trim() !== '')) {
+    try { const u = await get(`/users/${encodeURIComponent(uid)}`); email = String(((u.data || {}).attributes || {}).email || ''); } catch {}
+  }
+  return { is_guest: false, email, payment_method: null, payment_method_id: null,
+           payment_transaction_id: null, payment_method_name: null };
+}
+
 async function bookPrivate({ cid, date, time, pid, serviceId }) {
   if (!cid) throw new Error('Pick a client from the list.');
   let uid = tokens.get(String(cid));
@@ -1021,11 +1037,12 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     // value is passed along; otherwise Mariana Tek's default applies.
     recurrence_type: 'NONE',          // every live booking is NONE; a one-off must never repeat
     status: 'SCHEDULED',
-    metadata: { defer_payment: false },   // required field (live 422); existing bookings carry it
+    metadata: { defer_payment: false, participants: [await participantFor(uid, tpl)] },
   };
   let r;
   const t0 = Date.now();
-  console.log('book private: POST start', JSON.stringify({ ...body, customer_id: '…' }));
+  console.log('book private: POST start', JSON.stringify({ ...body, customer_id: '…',
+    metadata: { ...body.metadata, participants: body.metadata.participants.map(p => ({ ...p, email: p.email ? '…' : '' })) } }));
   // Live 422 said EVERY field was required while all were sent: the body
   // wasn't being read. Errors come back under "data", so try the body
   // wrapped in {data: ...}, then plain JSON. A reply that still lists every
