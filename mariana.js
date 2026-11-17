@@ -681,6 +681,7 @@ async function checkIn(rid) {
  */
 const PRIVATE_MATCH = new RegExp(process.env.MT_PRIVATE_MATCH || 'private', 'i');
 const PRIVATE_LOW = Number(process.env.PRIVATE_LOW || 2);
+const EXPIRY_WARN_DAYS = Number(process.env.PACK_EXPIRY_WARN_DAYS || 14);
 // /credits turned out to be credit TYPES (no balances). Balances live on
 // credit_transactions: one per package purchase/gift, carrying
 // remaining_credits_cache, credit_name, expiration_datetime and is_expired.
@@ -731,7 +732,13 @@ async function packFor(uid) {
     const e = a.expiration_datetime;
     if (e && a.remaining_credits_cache > 0 && (!expires || e < expires)) expires = e;
   }
-  return { left, packs: live.length, expires: expires ? String(expires).slice(0, 10) : null,
+  // Lessons sitting in the soonest-expiring pack: "Loss of Credit" packs
+  // forfeit them at expiry, so that's the number a coach needs to see.
+  const expiringLeft = expires ? live.filter(t => t.attributes.expiration_datetime === expires)
+    .reduce((n, t) => n + (t.attributes.remaining_credits_cache || 0), 0) : 0;
+  const soonest = expires ? live.find(t => t.attributes.expiration_datetime === expires) : null;
+  return { left, packs: live.length, expires: expires ? gymClock(expires).date || String(expires).slice(0, 10) : null,
+           expiringLeft, expiringLabel: soonest ? String(soonest.attributes.credit_name || '') : null,
            label: String(live[0].attributes.credit_name || '') };
 }
 
@@ -930,8 +937,13 @@ async function privates({ fresh = false, today } = {}) {
       upcoming: c.lessons.filter(l => l.upcoming).length, doneLast30: done.length,
       left, expires: c.pack ? c.pack.expires : null, packLabel: c.pack ? c.pack.label : null,
       renew: left != null && left <= PRIVATE_LOW,
+      // Lessons that will be lost if not used before the pack expires.
+      expiringSoon: !!(c.pack && c.pack.expires && c.pack.expiringLeft > 0 && c.pack.expires <= addDaysIso(today, EXPIRY_WARN_DAYS)),
+      expiringLeft: c.pack ? c.pack.expiringLeft : 0,
+      expiringLabel: c.pack ? c.pack.expiringLabel : null,
+      booked: c.lessons.filter(l => l.upcoming).length,
     };
-  }).sort((a, b) => (b.renew - a.renew) || ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
+  }).sort((a, b) => (b.expiringSoon - a.expiringSoon) || (b.renew - a.renew) || ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
 
   // Coaches who can take a private, for the booking form.
   const svcCoaches = [];
@@ -942,7 +954,7 @@ async function privates({ fresh = false, today } = {}) {
 
   upcomingAll.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
   const value = {
-    from, to, low: PRIVATE_LOW, clients: out, upcoming: upcomingAll.slice(0, 60), packError,
+    from, to, low: PRIVATE_LOW, expiryWarnDays: EXPIRY_WARN_DAYS, clients: out, upcoming: upcomingAll.slice(0, 60), packError,
     services: services.map(s => ({ id: s.id, name: s.service_name,
       minutes: Number(s.duration) > 300 ? Math.round(Number(s.duration) / 60) : Number(s.duration) || null,
       coachIds: (s.providers || []).map(p => String(p && typeof p === 'object' ? p.id : p)) })),
