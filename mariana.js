@@ -712,13 +712,13 @@ async function packFor(uid) {
  * found Gauntlet's two services, "Personal Training" and "PRIVATE LESSONS";
  * MT_PRIVATE_MATCH picks which count as privates (default "private").
  */
-async function appt(path, params = {}, { method = 'GET', body } = {}) {
+async function appt(path, params = {}, { method = 'GET', body, contentType = 'application/vnd.api+json' } = {}) {
   const url = new URL(BASE + path);
   for (const [k, v] of Object.entries(params)) if (v != null && v !== '') url.searchParams.set(k, v);
   const res = await fetch(url, {
     method,
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json',
-               ...(body ? { 'Content-Type': 'application/vnd.api+json' } : {}) },
+               ...(body ? { 'Content-Type': contentType } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(20000),
   });
@@ -728,7 +728,9 @@ async function appt(path, params = {}, { method = 'GET', body } = {}) {
     // Validation errors come in several shapes ({error}, {errors:{field:[..]}},
     // {errors:[{detail}]}, {message}, {detail}); fall back to the raw body so
     // the reason is never lost again.
-    let msg = json && (json.error || json.message || json.detail ||
+    const fieldList = o => o && typeof o === 'object' && !Array.isArray(o) && Object.values(o).some(Array.isArray)
+      ? Object.entries(o).map(([k, v]) => `${k}: ${[].concat(v).join(', ')}`).join('; ') : null;
+    let msg = json && (json.error || json.message || json.detail || fieldList(json.data) ||
       (Array.isArray(json.errors) ? json.errors.map(x => x.detail || x.title || JSON.stringify(x)).join('; ')
         : json.errors && typeof json.errors === 'object'
           ? (json.errors.detail || Object.entries(json.errors).map(([k, v]) => `${k}: ${[].concat(v).join(', ')}`).join('; '))
@@ -987,11 +989,40 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     // value is passed along; otherwise Mariana Tek's default applies.
     recurrence_type: 'NONE',          // every live booking is NONE; a one-off must never repeat
     status: 'SCHEDULED',
+    metadata: { defer_payment: false },   // required field (live 422); existing bookings carry it
   };
   let r;
   const t0 = Date.now();
   console.log('book private: POST start', JSON.stringify({ ...body, customer_id: '…' }));
-  try { r = await appt('/appointments/bookings', {}, { method: 'POST', body }); console.log(`book private: POST ok in ${Date.now() - t0}ms`); }
+  // Live 422 said EVERY field was required while all were sent: the body
+  // wasn't being read. Errors come back under "data", so try the body
+  // wrapped in {data: ...}, then plain JSON. A reply that still lists every
+  // field as missing means nothing was read, so nothing was created and the
+  // next shape is safe to try. Any other reply (success or a real error) stops.
+  const notRead = e => {
+    const d = e && e.body && (e.body.data || e.body.errors || e.body);
+    return e && e.status === 422 && d && typeof d === 'object' && ['service_id', 'customer_id', 'start_date'].every(k => k in d);
+  };
+  const shapes = [
+    { label: 'jsonapi+data', contentType: 'application/vnd.api+json', body: { data: body } },
+    { label: 'json+data', contentType: 'application/json', body: { data: body } },
+    { label: 'json', contentType: 'application/json', body },
+  ];
+  try {
+    let lastErr;
+    for (const sh of shapes) {
+      try {
+        r = await appt('/appointments/bookings', {}, { method: 'POST', body: sh.body, contentType: sh.contentType });
+        console.log(`book private: POST ok (${sh.label}) in ${Date.now() - t0}ms`);
+        lastErr = null; break;
+      } catch (e) {
+        lastErr = e;
+        console.log(`book private: ${sh.label} -> ${e.status || ''} ${notRead(e) ? '(body not read)' : e.message.slice(0, 200)}`);
+        if (!notRead(e)) break;
+      }
+    }
+    if (lastErr) throw lastErr;
+  }
   catch (e) {
     console.log(`book private: POST failed in ${Date.now() - t0}ms: ${e.message}`);
     if (e.body) console.log('book private: Mariana Tek said', JSON.stringify(e.body).slice(0, 800));
