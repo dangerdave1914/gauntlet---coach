@@ -725,7 +725,15 @@ async function appt(path, params = {}, { method = 'GET', body } = {}) {
   const text = await res.text();
   let json = null; try { json = text ? JSON.parse(text) : null; } catch {}
   if (!res.ok) {
-    const msg = json && (json.error || (json.errors && (json.errors.detail || (json.errors[0] && (json.errors[0].detail || json.errors[0].title)))));
+    // Validation errors come in several shapes ({error}, {errors:{field:[..]}},
+    // {errors:[{detail}]}, {message}, {detail}); fall back to the raw body so
+    // the reason is never lost again.
+    let msg = json && (json.error || json.message || json.detail ||
+      (Array.isArray(json.errors) ? json.errors.map(x => x.detail || x.title || JSON.stringify(x)).join('; ')
+        : json.errors && typeof json.errors === 'object'
+          ? (json.errors.detail || Object.entries(json.errors).map(([k, v]) => `${k}: ${[].concat(v).join(', ')}`).join('; '))
+          : null));
+    if (!msg) msg = (text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
     const e = new Error(`Mariana Tek ${res.status} on ${path}${msg ? ': ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)) : ''}`);
     e.status = res.status; e.body = json;
     throw e;
@@ -986,6 +994,7 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
   try { r = await appt('/appointments/bookings', {}, { method: 'POST', body }); console.log(`book private: POST ok in ${Date.now() - t0}ms`); }
   catch (e) {
     console.log(`book private: POST failed in ${Date.now() - t0}ms: ${e.message}`);
+    if (e.body) console.log('book private: Mariana Tek said', JSON.stringify(e.body).slice(0, 800));
     if (e.name === 'TimeoutError' || /aborted|timeout/i.test(e.message)) throw new Error('Mariana Tek didn\'t answer within 20 seconds. Check Mariana Tek before trying again: the booking may have gone through.');
     if (e.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have permission to create appointment bookings. Ask integrations@marianatek.com to add it.');
     throw new Error(e.message.replace(/ on \/appointments\/bookings/, ''));

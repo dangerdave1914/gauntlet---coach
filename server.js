@@ -1395,7 +1395,7 @@ app.get('/api/members', async (req, res) => {
     res.json({ enabled: true, ...(await mariana.day(date, { fresh: req.query.fresh === '1' })) });
   } catch (e) {
     console.error('members:', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(424).json({ error: e.message });
   }
 });
 
@@ -1410,7 +1410,7 @@ app.get('/api/milestones', async (req, res) => {
     res.json({ enabled: true, ...(await mariana.milestones({ fresh: req.query.fresh === '1', today: gymToday() })) });
   } catch (e) {
     console.error('milestones:', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(424).json({ error: e.message });
   }
 });
 // Walking two weeks of rosters is slow, so do it in the background rather
@@ -1436,7 +1436,7 @@ app.post('/api/checkin', async (req, res) => {
     res.json(r);
   } catch (e) {
     console.error('checkin:', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(424).json({ error: e.message });
   }
 });
 
@@ -1475,7 +1475,7 @@ app.get('/api/privates', async (req, res) => {
     });
   } catch (e) {
     console.error('privates:', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(424).json({ error: e.message });
   }
 });
 
@@ -1504,7 +1504,7 @@ app.post('/api/privates/book', async (req, res) => {
     res.json(r);
   } catch (e) {
     console.error('book private:', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(424).json({ error: e.message });
   }
 });
 
