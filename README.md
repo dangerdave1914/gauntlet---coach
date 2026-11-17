@@ -114,7 +114,7 @@ booked far enough ahead, it names the exact class where they cross the line,
 so there's lead time to prep the celebration. Anyone within 5 classes who
 isn't booked that far out still shows, marked "to go".
 
-A class count = checked-in reservations in Mariana Tek. Two consequences:
+A class count = Mariana Tek's own `completed_class_count` for the member. Two consequences:
 history from before Gauntlet moved onto Mariana Tek isn't counted, and anyone
 who isn't checked in at the desk doesn't get credit. Roster chips also show
 each member's count and their roadmap tier (WHITE under 15, BLUE 15–49, BLACK
@@ -137,7 +137,7 @@ Members → Privates lists everyone with a private in the last 30 days or next
 14: next and last lesson, coach, and lessons left in their pack, flagged
 **Renew** at 2 or fewer (`PRIVATE_LOW`). Privates are found by class name
 (`MT_PRIVATE_MATCH`, default "private"); pack balances come from
-`MT_CREDITS_PATH` (default `/credits`). Coaches see their own clients,
+`MT_CREDITS_PATH` (default `/credit_transactions`, `remaining_credits_cache`). Coaches see their own clients,
 matched by name between Mariana Tek and the Staff tab; schedulers see all.
 
 **Booking:** the Privates view lists open private slots (upcoming private

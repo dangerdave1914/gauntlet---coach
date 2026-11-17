@@ -61,9 +61,16 @@ async function getAll(path, params = {}) {
   let body = await get(path, params);
   const data = [...(body.data || [])];
   const included = [...(body.included || [])];
-  for (let i = 1; i < MAX_PAGES && body.links && body.links.next; i++) {
-    const next = new URL(body.links.next);
-    body = await get(path, Object.fromEntries(next.searchParams));
+  // Mariana Tek reports pages in meta.pagination (the probe showed no
+  // links block), so walk page numbers; follow a next link if one appears.
+  for (let i = 1; i < MAX_PAGES; i++) {
+    const pg = body.meta && body.meta.pagination;
+    const nextLink = (body.links && body.links.next) || body.next;
+    let nextParams;
+    if (nextLink) nextParams = Object.fromEntries(new URL(nextLink).searchParams);
+    else if (pg && pg.page && pg.pages && pg.page < pg.pages) nextParams = { ...params, page: pg.page + 1 };
+    else break;
+    body = await get(path, nextParams);
     data.push(...(body.data || []));
     included.push(...(body.included || []));
   }
@@ -82,6 +89,11 @@ const rel = (rec, name, idx) => {
   const d = rec && rec.relationships && rec.relationships[name] && rec.relationships[name].data;
   return d ? idx.get(`${d.type}:${d.id}`) || null : null;
 };
+
+/** class_type_display may be a string or an object with a name. */
+const displayText = v => v == null ? '' : typeof v === 'object' ? String(v.name || v.display || '') : String(v);
+const namesOf = v => (Array.isArray(v) ? v : v ? String(v).split(/\s*,\s*/) : [])
+  .map(x => typeof x === 'object' ? (x.name || x.full_name || '') : String(x)).map(x => x.trim()).filter(Boolean);
 
 const first = (obj, ...keys) => {
   for (const k of keys) if (obj && obj[k] != null && obj[k] !== '') return obj[k];
@@ -122,7 +134,7 @@ function statusOf(res) {
   const type = String(first(a, 'reservation_type') || '').toLowerCase();
   if (/cancel/.test(s)) return 'cancelled';
   if (/no.?show/.test(s)) return 'noshow';
-  if (/check/.test(s) || a.is_checked_in === true || a.check_in_datetime) return 'in';
+  if (/check/.test(s) || a.is_checked_in === true || a.check_in_datetime || a.check_in_date) return 'in';
   if (/waitlist|standby/.test(type) || /waitlist|standby/.test(s)) return 'waitlist';
   return 'booked';
 }
@@ -160,11 +172,13 @@ async function sessionsRange(min, max) {
       date: clock.date || first(a, 'start_date'),
       time: clock.time || first(a, 'start_time') || '',
       mins: clock.mins,
-      name: first(a, 'class_name', 'name', 'class_type_name') || 'Class',
+      name: displayText(first(a, 'class_type_display', 'class_name', 'name')) || 'Class',
       capacity: first(a, 'capacity', 'standard_capacity'),
       spots: first(a, 'available_spots', 'available_spot_count', 'remaining_capacity'),
-      instructor: instructor ? first(instructor.attributes, 'name', 'display_name')
-        : (first(a, 'instructor_name', 'instructor_names', 'employee_name') || null),
+      // instructor_names is a list (a class can have two coaches).
+      instructors: namesOf(first(a, 'instructor_names', 'instructor_name'))
+        .concat(instructor ? [first(instructor.attributes, 'schedule_display_name', 'name')].filter(Boolean) : []),
+      get instructor() { return this.instructors.length ? [...new Set(this.instructors)].join(', ') : null; },
       cancelled: a.is_cancelled === true,
     };
   })
@@ -278,7 +292,7 @@ async function probe(date) {
     // Class names over the next two weeks, so MT_PRIVATE_MATCH can be set
     // to whatever Mariana Tek actually calls a private.
     const span = await get('/class_sessions', { location: LOCATION, min_date: date, max_date: addDaysIso(date, 14), page_size: 100 });
-    const names = [...new Set((span.data || []).map(x => first(x.attributes || {}, 'class_name', 'name')).filter(Boolean))];
+    const names = [...new Set((span.data || []).map(x => displayText(first(x.attributes || {}, 'class_type_display', 'class_name', 'name'))).filter(Boolean))];
     // Private names can carry the client's name, so those are counted, not listed.
     out.classNames = names.filter(n => !PRIVATE_MATCH.test(n)).sort();
     out.privateMatch = { pattern: PRIVATE_MATCH.source, matchingClassNames: names.filter(n => PRIVATE_MATCH.test(n)).length };
@@ -293,9 +307,14 @@ async function probe(date) {
       .data.map(x => relId(x, 'user')).find(Boolean);
     if (someUid) {
       try {
-        const cr = await get(CREDITS_PATH, { user: someUid, page_size: 5 });
-        out.credits = { path: CREDITS_PATH, count: (cr.data || []).length, sample: shape((cr.data || [])[0]),
-          filterHeld: (cr.data || []).every(x => !relId(x, 'user') || String(relId(x, 'user')) === String(someUid)) };
+        const cr = await get(CREDITS_PATH, { user: someUid, page_size: 25 });
+        const recs = cr.data || [];
+        out.credits = { path: CREDITS_PATH, count: recs.length, sample: shape(recs[0]),
+          filterHeld: recs.every(x => !relId(x, 'user') || String(relId(x, 'user')) === String(someUid)),
+          originationTypes: [...new Set(recs.map(x => (x.attributes || {}).origination_type).filter(Boolean))],
+          withBalance: recs.filter(x => typeof (x.attributes || {}).remaining_credits_cache === 'number').length,
+          // Product names (not personal), so the private pack's name can be matched.
+          creditNames: [...new Set(recs.map(x => (x.attributes || {}).credit_name).filter(Boolean))] };
       } catch (e) { out.credits = { path: CREDITS_PATH, error: e.message }; }
     }
     out.checkIn = 'Not probed — it would change a real record. The first tap in the app will report whether it works.';
@@ -448,7 +467,7 @@ async function checkIn(rid) {
   cache.delete(r.date);                          // roster shows it on next load
   if (r.uid) {                                   // one more class toward their milestone
     const c = counts.get(String(r.uid));
-    if (c && c.source === 'history') c.n += 1;
+    if (c) c.n += 1;
   }
   mileCache = null;
   return { ok: true };
@@ -464,7 +483,10 @@ async function checkIn(rid) {
  */
 const PRIVATE_MATCH = new RegExp(process.env.MT_PRIVATE_MATCH || 'private', 'i');
 const PRIVATE_LOW = Number(process.env.PRIVATE_LOW || 2);
-const CREDITS_PATH = process.env.MT_CREDITS_PATH || '/credits';
+// /credits turned out to be credit TYPES (no balances). Balances live on
+// credit_transactions: one per package purchase/gift, carrying
+// remaining_credits_cache, credit_name, expiration_datetime and is_expired.
+const CREDITS_PATH = process.env.MT_CREDITS_PATH || '/credit_transactions';
 let privCache = null;
 const PRIV_TTL = 10 * 60 * 1000;
 // Where a client buys a lesson pack themselves (a Mariana Tek web link).
@@ -482,23 +504,33 @@ function tokenFor(uid) {
 }
 const openSlots = new Map();  // sid -> { coach, date }
 
-/** Lessons left in a client's private pack, or null if Mariana Tek won't say. */
+/** Lessons left in a client's private packs, or null if Mariana Tek won't say.
+ *  Each package keeps its own balance, so live private packages are summed. */
 async function packFor(uid) {
   const { data } = await getAll(CREDITS_PATH, { user: uid, page_size: 100 });
-  const mine = data.filter(c => !relId(c, 'user') || String(relId(c, 'user')) === String(uid));
-  const label = c => String(first(c.attributes || {}, 'name', 'credit_name', 'product_name', 'payment_option_name', 'description') || '');
-  const priv = mine.filter(c => PRIVATE_MATCH.test(label(c)));
-  const pool = priv.length ? priv : [];
-  if (!pool.length) return { left: null, packs: 0, expires: null, label: null };
+  const mine = data.filter(t => !relId(t, 'user') || String(relId(t, 'user')) === String(uid));
+  const now = new Date().toISOString();
+  // A balance-carrying record: has a remaining count, isn't expired. If
+  // origination_type is present, only package-creating records count, so a
+  // usage record that echoes the same cache isn't added twice.
+  let live = mine.filter(t => {
+    const a = t.attributes || {};
+    if (typeof a.remaining_credits_cache !== 'number') return false;
+    if (a.is_expired === true) return false;
+    if (a.expiration_datetime && String(a.expiration_datetime) < now) return false;
+    return PRIVATE_MATCH.test(String(a.credit_name || ''));
+  });
+  if (live.some(t => t.attributes.origination_type)) live = live.filter(t => t.attributes.origination_type);
+  if (!live.length) return { left: null, packs: 0, expires: null, label: null };
   let left = 0, expires = null;
-  for (const c of pool) {
-    const a = c.attributes || {};
-    const n = first(a, 'remaining_count', 'credits_remaining', 'remaining', 'count_remaining', 'remaining_credits');
-    if (typeof n === 'number') left += n;
-    const e = first(a, 'expiration_datetime', 'expiration_date', 'expires_at', 'expiry_date');
-    if (e && (!expires || e < expires)) expires = e;
+  for (const t of live) {
+    const a = t.attributes;
+    left += a.remaining_credits_cache;
+    const e = a.expiration_datetime;
+    if (e && a.remaining_credits_cache > 0 && (!expires || e < expires)) expires = e;
   }
-  return { left, packs: pool.length, expires: expires ? String(expires).slice(0, 10) : null, label: label(pool[0]) };
+  return { left, packs: live.length, expires: expires ? String(expires).slice(0, 10) : null,
+           label: String(live[0].attributes.credit_name || '') };
 }
 
 async function privates({ fresh = false, today } = {}) {
@@ -523,7 +555,7 @@ async function privates({ fresh = false, today } = {}) {
     for (const p of roster) {
       const key = p.uid || 'guest:' + p.name;
       const c = clients.get(key) || { uid: p.uid, name: p.name, coaches: new Set(), lessons: [] };
-      if (s.instructor) c.coaches.add(s.instructor);
+      for (const n of s.instructors) c.coaches.add(n);
       c.lessons.push({ date: s.date, time: s.time, coach: s.instructor, status: p.status, upcoming: s.date >= today && p.status !== 'in' });
       clients.set(key, c);
     }
