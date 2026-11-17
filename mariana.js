@@ -762,7 +762,7 @@ async function appt(path, params = {}, { method = 'GET', body, contentType = 'ap
     // the reason is never lost again.
     const fieldList = o => o && typeof o === 'object' && !Array.isArray(o) && Object.values(o).some(Array.isArray)
       ? Object.entries(o).map(([k, v]) => `${k}: ${[].concat(v).join(', ')}`).join('; ') : null;
-    let msg = json && (json.error || json.message || json.detail || fieldList(json.data) ||
+    let msg = json && ((json.error && typeof json.error === 'object' ? (json.error.type || JSON.stringify(json.error)) : json.error) || json.message || json.detail || fieldList(json.data) ||
       (Array.isArray(json.errors) ? json.errors.map(x => x.detail || x.title || JSON.stringify(x)).join('; ')
         : json.errors && typeof json.errors === 'object'
           ? (json.errors.detail || Object.entries(json.errors).map(([k, v]) => `${k}: ${[].concat(v).join(', ')}`).join('; '))
@@ -993,7 +993,7 @@ async function participantFor(uid, tpl) {
            payment_transaction_id: null, payment_method_name: null };
 }
 
-async function bookPrivate({ cid, date, time, pid, serviceId }) {
+async function bookPrivate({ cid, date, time, pid, serviceId, force = false }) {
   if (!cid) throw new Error('Pick a client from the list.');
   let uid = tokens.get(String(cid));
   if (!uid) {                       // server restarted since the page loaded: rebuild the list once
@@ -1038,6 +1038,9 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     recurrence_type: 'NONE',          // every live booking is NONE; a one-off must never repeat
     status: 'SCHEDULED',
     metadata: { defer_payment: false, participants: [await participantFor(uid, tpl)] },
+    // Only when the coach confirmed "book anyway" after a conflict — the same
+    // override the desk uses (no coach has appointment availability set).
+    ...(force ? { is_forced_booking: true } : {}),
   };
   let r;
   const t0 = Date.now();
@@ -1076,6 +1079,16 @@ async function bookPrivate({ cid, date, time, pid, serviceId }) {
     console.log(`book private: POST failed in ${Date.now() - t0}ms: ${e.message}`);
     if (e.body) console.log('book private: Mariana Tek said', JSON.stringify(e.body).slice(0, 800));
     if (e.name === 'TimeoutError' || /aborted|timeout/i.test(e.message)) throw new Error('Mariana Tek didn\'t answer within 20 seconds. Check Mariana Tek before trying again: the booking may have gone through.');
+    // Availability conflict: say it plainly and let the coach choose to override.
+    const conf = e.body && (e.body.error || e.body);
+    if (conf && conf.type === 'BOOKING_CONFLICT') {
+      const items = ((conf.details && conf.details.conflicting_dates) || []).flatMap(d => (d.conflicts || []).map(c => c.code));
+      const why = items.includes('PROVIDER_UNAVAILABLE') ? 'isn\'t marked available for appointments then in Mariana Tek'
+        : items.some(c => /OVERLAP|BOOKED|CONFLICT/i.test(c)) ? 'already has something booked then' : `has a conflict (${items.join(', ') || 'unspecified'})`;
+      const err = new Error(`${coachNames.get(String(pid)) || 'That coach'} ${why}.`);
+      err.conflict = true; err.codes = items;
+      throw err;
+    }
     if (e.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have permission to create appointment bookings. Ask integrations@marianatek.com to add it.');
     throw new Error(e.message.replace(/ on \/appointments\/bookings/, ''));
   }

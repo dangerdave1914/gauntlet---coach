@@ -1499,11 +1499,13 @@ app.post('/api/privates/book', async (req, res) => {
         'Your name on the Staff tab doesn\'t match a coach on the private-lesson service in Mariana Tek.' });
     }
     if (String(req.body.date || '') < gymToday()) return res.status(400).json({ error: 'That date has passed.' });
-    const r = await mariana.bookPrivate({ cid: req.body.cid, date: req.body.date, time: req.body.time, pid, serviceId: req.body.serviceId });
-    console.log(`private booked ${req.body.date} ${req.body.time} coach ${pid} by ${me.name}`);
+    const force = req.body.force === true;
+    const r = await mariana.bookPrivate({ cid: req.body.cid, date: req.body.date, time: req.body.time, pid, serviceId: req.body.serviceId, force });
+    console.log(`private booked ${req.body.date} ${req.body.time} coach ${pid} by ${me.name}${force ? ' (override)' : ''}`);
     res.json(r);
   } catch (e) {
     console.error('book private:', e.message);
+    if (e.conflict) return res.status(409).json({ error: e.message, conflict: true, codes: e.codes });
     res.status(424).json({ error: e.message });
   }
 });
