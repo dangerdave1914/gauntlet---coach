@@ -162,6 +162,7 @@ async function sessionsRange(min, max) {
       mins: clock.mins,
       name: first(a, 'class_name', 'name', 'class_type_name') || 'Class',
       capacity: first(a, 'capacity', 'standard_capacity'),
+      spots: first(a, 'available_spots', 'available_spot_count', 'remaining_capacity'),
       instructor: instructor ? first(instructor.attributes, 'name', 'display_name')
         : (first(a, 'instructor_name', 'instructor_names', 'employee_name') || null),
       cancelled: a.is_cancelled === true,
@@ -466,6 +467,20 @@ const PRIVATE_LOW = Number(process.env.PRIVATE_LOW || 2);
 const CREDITS_PATH = process.env.MT_CREDITS_PATH || '/credits';
 let privCache = null;
 const PRIV_TTL = 10 * 60 * 1000;
+// Where a client buys a lesson pack themselves (a Mariana Tek web link).
+const PACK_URL = (process.env.MT_PACK_URL || '').trim();
+
+// The browser only ever sees opaque client tokens and slot IDs the app has
+// listed, so booking can't be aimed at arbitrary members or classes.
+const crypto = require('crypto');
+const tokens = new Map();     // token -> uid
+const tokenOf = new Map();    // uid -> token
+function tokenFor(uid) {
+  uid = String(uid);
+  if (!tokenOf.has(uid)) { const t = crypto.randomBytes(9).toString('base64url'); tokenOf.set(uid, t); tokens.set(t, uid); }
+  return tokenOf.get(uid);
+}
+const openSlots = new Map();  // sid -> { coach, date }
 
 /** Lessons left in a client's private pack, or null if Mariana Tek won't say. */
 async function packFor(uid) {
@@ -493,8 +508,18 @@ async function privates({ fresh = false, today } = {}) {
 
   const sessions = (await sessionsRange(from, to)).filter(s => PRIVATE_MATCH.test(s.name) && !s.cancelled);
   const clients = new Map();   // uid -> { name, coaches:Set, lessons:[] }
+  const open = [];
   for (const s of sessions) {
     let roster; try { roster = await rosterFor(s.id); } catch { continue; }
+    // An open slot: upcoming, and Mariana Tek says there's room (or, when it
+    // doesn't say, nobody's in it yet — a private is one person).
+    const booked = roster.filter(p => p.status !== 'waitlist').length;
+    const room = typeof s.spots === 'number' ? s.spots > 0
+      : typeof s.capacity === 'number' ? booked < s.capacity : booked === 0;
+    if (s.date >= today && room) {
+      open.push({ sid: String(s.id), date: s.date, time: s.time, mins: s.mins, coach: s.instructor, name: s.name });
+      openSlots.set(String(s.id), { coach: s.instructor, date: s.date });
+    }
     for (const p of roster) {
       const key = p.uid || 'guest:' + p.name;
       const c = clients.get(key) || { uid: p.uid, name: p.name, coaches: new Set(), lessons: [] };
@@ -523,6 +548,7 @@ async function privates({ fresh = false, today } = {}) {
     // unclaimed is left minus booked — when Mariana Tek doesn't already
     // deduct at booking. Shown as-is; the flag uses the raw balance.
     return {
+      cid: c.uid ? tokenFor(c.uid) : null,
       name: c.name, coaches: [...c.coaches],
       lastLesson: c.lessons.filter(l => l.status === 'in').map(l => l.date).sort().pop() || null,
       nextLesson: c.lessons.filter(l => l.upcoming).sort((a, b) => a.date.localeCompare(b.date))[0] || null,
@@ -532,9 +558,47 @@ async function privates({ fresh = false, today } = {}) {
     };
   }).sort((a, b) => (b.renew - a.renew) || ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
 
-  const value = { from, to, low: PRIVATE_LOW, clients: out, packError, sessions: sessions.length, updatedAt: new Date().toISOString() };
+  open.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
+  const value = { from, to, low: PRIVATE_LOW, clients: out, open, packError, sessions: sessions.length,
+    packUrl: PACK_URL || null, updatedAt: new Date().toISOString() };
   privCache = { at: Date.now(), value };
   return value;
 }
 
-module.exports = { enabled, day, probe, milestones, checkIn, privates };
+/* ---------------------------------------------------- booking a private */
+
+/**
+ * Books a private client into an open private slot, paid from their pack.
+ * Body shape follows Mariana Tek's documented booking call (JSON:API,
+ * reservation_type standard, class_session + user relationships). If
+ * Mariana Tek wants the pack named explicitly, its error says so and is
+ * passed through word for word.
+ */
+function slotInfo(sid) { return openSlots.get(String(sid)) || null; }
+
+async function bookPrivate(sid, cid) {
+  sid = String(sid || ''); const uid = tokens.get(String(cid || ''));
+  if (!openSlots.has(sid)) throw new Error('That slot isn\'t open anymore. Refresh and pick another.');
+  if (!uid) throw new Error('Pick a client from the list.');
+  const r = await post('/reservations', { data: {
+    type: 'reservations',
+    attributes: { reservation_type: 'standard' },
+    relationships: {
+      class_session: { data: { type: 'class_sessions', id: sid } },
+      user: { data: { type: 'users', id: uid } },
+    },
+  } });
+  if (!r.ok) {
+    if (r.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have booking permission. Ask integrations@marianatek.com to add it.');
+    const e = r.json && r.json.errors && r.json.errors[0];
+    const msg = e && (e.detail || e.title);
+    throw new Error(`Mariana Tek ${r.status}${msg ? ': ' + msg : ''}`);
+  }
+  const slot = openSlots.get(sid);
+  if (slot) cache.delete(slot.date);          // that day's roster shows the booking
+  openSlots.delete(sid);
+  privCache = null;
+  return { ok: true, reservation: r.json && r.json.data ? String(r.json.data.id) : null };
+}
+
+module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, slotInfo };

@@ -21,6 +21,7 @@
  *   PRIVATE_LOW          (optional) lessons left that triggers the renewal flag, default 2
  *   MT_CREDITS_PATH      (optional) where lesson-pack balances live, default /credits
  *   MT_SESSION_INCLUDE   (optional) e.g. employee_public_profiles, for instructor names
+ *   MT_PACK_URL          (optional) Mariana Tek link where clients buy a private pack
  *   MT_CHECKIN_PATHS     (optional) check-in endpoint suffixes to try, default check_in,check-in
  *   TV_URL               (optional) the lobby TV Worker. Defaults to
  *                        https://gauntlet-bingo.dangerdave1914.workers.dev
@@ -1463,9 +1464,34 @@ app.get('/api/privates', async (req, res) => {
     // everything — show all and say so instead.
     const clients = all || !anyCoachKnown ? d.clients
       : d.clients.filter(c => c.coaches.some(n => sameCoach(n, me.name)));
-    res.json({ enabled: true, ...d, clients, scope: all ? 'all' : anyCoachKnown ? 'mine' : 'all-unknown-coach' });
+    const open = all ? d.open : d.open.filter(o => !o.coach || sameCoach(o.coach, me.name));
+    res.json({ enabled: true, ...d, clients, open, scope: all ? 'all' : anyCoachKnown ? 'mine' : 'all-unknown-coach' });
   } catch (e) {
     console.error('privates:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
+
+/** Book a private client into an open private slot. Coaches book into their
+ *  own slots; schedulers into anyone's. If Mariana Tek doesn't say who
+ *  teaches a slot, any staff member can book it. */
+app.post('/api/privates/book', async (req, res) => {
+  try {
+    if (!mariana.enabled()) return res.status(400).json({ error: 'Mariana Tek isn\'t connected.' });
+    const email = String(req.body.email || '').toLowerCase().trim();
+    await warm();
+    const me = (cache.staff || []).find(s => s.email === email);
+    if (!me) return res.status(403).json({ error: 'Register as staff to book privates.' });
+    const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
+    const slot = mariana.slotInfo(req.body.sid);
+    if (slot && slot.coach && !all && !sameCoach(slot.coach, me.name)) {
+      return res.status(403).json({ error: `That slot is ${slot.coach}'s. Book into one of yours.` });
+    }
+    const r = await mariana.bookPrivate(req.body.sid, req.body.cid);
+    console.log(`private booked: slot ${req.body.sid} by ${me.name}`);
+    res.json(r);
+  } catch (e) {
+    console.error('book private:', e.message);
     res.status(502).json({ error: e.message });
   }
 });
