@@ -1555,15 +1555,65 @@ function privatesHtml() {
       c.coaches.length && d.scope !== 'mine' ? esc(c.coaches.join(', ')) : '',
       c.expires ? `Pack expires ${esc(shortDate(c.expires))}` : '',
     ].filter(Boolean).join(' · ');
+    const link = d.packUrl && (c.renew || c.left === 0)
+      ? `<div class="acts" style="margin-top:6px"><button data-packlink="${esc(c.name)}">Send pack link</button></div>` : '';
     return `<div class="mile"><div><b>${esc(c.name)}</b>${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
-        <div class="when">${lines}</div></div><div style="text-align:right">${bal}</div></div>`;
+        <div class="when">${lines}</div>${link}</div><div style="text-align:right">${bal}</div></div>`;
   }).join('');
+  const slots = (d.open || []).map(o => `<div class="mile"><div><b>${esc(shortDate(o.date))} · ${esc(o.time)}</b>
+      <div class="when">${esc(o.name)}${o.coach ? ' · ' + esc(o.coach) : ''}</div></div>
+      <div class="acts"><button class="take" data-book="${esc(o.sid)}">Book</button></div></div>`).join('');
   return `<div class="datenav"><div class="label">${esc(scope)}</div>
       <button id="priv-refresh" aria-label="Refresh">↻</button></div>
     ${renew ? `<p class="empty" style="margin:-4px 0 10px;color:var(--warn);font-style:normal">${renew} client${renew > 1 ? 's' : ''} at ${d.low} lessons or fewer: time to talk renewal.</p>` : ''}
     ${d.packError ? `<p class="empty">Pack balances unavailable: ${esc(d.packError)}</p>` : ''}
+    <h2 class="sec">Open private slots</h2>
+    <div class="miles" style="border-color:var(--line)">${slots || '<p class="empty" style="margin:8px 0">No open private slots in the next 14 days. Add them on the Mariana Tek schedule.</p>'}</div>
+    <h2 class="sec">Clients</h2>
     <div class="miles" style="border-color:var(--line)">${rows || '<p class="empty" style="margin:8px 0">No private lessons in the last 30 days or next 14.</p>'}</div>
     <p class="empty">Privates from the last 30 days and next 14, from Mariana Tek.</p>`;
+}
+
+/* Pick a client for an open slot. Clients with no lessons left are shown but
+ * can't be picked: the booking would fail at Mariana Tek anyway. */
+function bookDialog(sid) {
+  const d = members.priv, slot = (d.open || []).find(o => o.sid === sid);
+  if (!slot) return;
+  const clients = (d.clients || []).filter(c => c.cid);
+  $('#dlg').showModal();
+  $('#sheet').innerHTML = `
+    <h2>Book a private</h2>
+    <p class="sub">${esc(shortDate(slot.date))} · ${esc(slot.time)}${slot.coach ? ' · ' + esc(slot.coach) : ''}</p>
+    <div class="pick" id="bk-who" style="flex-direction:column;align-items:stretch">${clients.length ? clients.map(c => {
+      const none = c.left === 0;
+      return `<button data-cid="${esc(c.cid)}" ${none ? 'disabled' : ''} style="text-align:left">${esc(c.name)}
+        <span style="float:right;opacity:.7">${c.left == null ? 'pack ?' : none ? 'no lessons left' : c.left + ' left'}</span></button>`;
+    }).join('') : '<p class="empty">No private clients yet. Clients show up here once they have a private booked in Mariana Tek.</p>'}</div>
+    <footer style="position:static;padding:0;gap:8px;background:none;margin-top:10px">
+      <button onclick="dlg.close()">Cancel</button>
+      <button class="primary" id="bk-go" disabled>Book</button>
+    </footer><div class="err" id="bk-err"></div>`;
+  let cid = null;
+  $('#bk-who').onclick = e => {
+    const b = e.target.closest('button[data-cid]'); if (!b || b.disabled) return;
+    cid = b.dataset.cid;
+    $('#bk-who').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    $('#bk-go').disabled = false;
+  };
+  $('#bk-go').onclick = async () => {
+    $('#bk-go').disabled = true; $('#bk-go').textContent = 'Booking…'; $('#bk-err').textContent = '';
+    try {
+      const r = await fetch('/api/privates/book', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: me.email, sid, cid }) });
+      const out = await r.json();
+      if (!r.ok || out.error) throw new Error(out.error || `Server returned ${r.status}`);
+      $('#dlg').close();
+      loadPrivates(true);
+    } catch (err) {
+      $('#bk-err').textContent = err.message;
+      $('#bk-go').disabled = false; $('#bk-go').textContent = 'Book';
+    }
+  };
 }
 
 /* One delegated handler for the whole pane: view switch, refresh, check-in. */
@@ -1576,6 +1626,18 @@ $('#pane-members').addEventListener('click', async e => {
   }
   if (e.target.closest('#mem-refresh')) return loadMembers(true);
   if (e.target.closest('#priv-refresh')) return loadPrivates(true);
+  const bk = e.target.closest('button[data-book]');
+  if (bk) return bookDialog(bk.dataset.book);
+  const pl = e.target.closest('button[data-packlink]');
+  if (pl) {
+    const url = members.priv.packUrl;
+    const text = `Hi ${pl.dataset.packlink.split(' ')[0]}, here's the link to renew your private lessons at Gauntlet:`;
+    try {
+      if (navigator.share) await navigator.share({ title: 'Gauntlet private lessons', text, url });
+      else { await navigator.clipboard.writeText(text + ' ' + url); pl.textContent = 'Link copied'; }
+    } catch { /* share sheet closed */ }
+    return;
+  }
 
   const chip = e.target.closest('li.tap[data-rid]');
   if (!chip || chip.classList.contains('busy')) return;

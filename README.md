@@ -140,6 +140,15 @@ Members → Privates lists everyone with a private in the last 30 days or next
 `MT_CREDITS_PATH` (default `/credits`). Coaches see their own clients,
 matched by name between Mariana Tek and the Staff tab; schedulers see all.
 
+**Booking:** the Privates view lists open private slots (upcoming private
+sessions in Mariana Tek with room). Tap Book, pick a client, and the app books
+them into that slot through Mariana Tek, paid from their pack. Coaches book into
+their own slots; schedulers into anyone's. The app can't create new slots —
+add those on the Mariana Tek schedule. Clients with no lessons left can't be
+picked; if `MT_PACK_URL` is set, they get a "Send pack link" button that opens
+the phone's share sheet so the coach can text them the Mariana Tek purchase
+link.
+
 First run: after setting `MT_API_KEY`, open
 `/api/members/probe?email=<a scheduler's email>`. It returns field **names**
 only (no member data), which shows whether the date and class_session filters
