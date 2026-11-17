@@ -463,6 +463,38 @@ async function probe(date) {
         participantsShape: (() => { const p = bl.find(b => b.metadata && b.metadata.participants); const x = p && p.metadata.participants;
           return Array.isArray(x) ? (x[0] && typeof x[0] === 'object' ? ['list of', Object.keys(x[0])] : `list(${x.length})`) : x ? typeof x : null; })(),
       };
+      // How participants are filled in: enum-like values, value TYPES, and
+      // whether payment_method_id points at that customer's own credit
+      // package. No emails or ids leave here.
+      const parts = bl.flatMap(b => ((b.metadata && b.metadata.participants) || []).map(x => ({ b, x })));
+      const pv = f => [...new Set(parts.map(({ x }) => f(x)).filter(v => v != null))].slice(0, 10);
+      const typ = v => v === null ? 'null' : Array.isArray(v) ? 'list' : typeof v;
+      const links = [];
+      for (const { b, x } of parts.slice(0, 4)) {
+        const l = { payment_method: x.payment_method ?? null };
+        try {
+          const ct = await getAll('/credit_transactions', { user: b.customer_id, page_size: 100 });
+          const ids = ct.data.map(t => String(t.id));
+          l.idIsCustomersCreditTransaction = x.payment_method_id != null && ids.includes(String(x.payment_method_id));
+          l.idIsCustomersCredit = x.payment_method_id != null && ct.data.some(t => String(relId(t, 'credit')) === String(x.payment_method_id));
+          l.txnIsCustomersCreditTransaction = x.payment_transaction_id != null && ids.includes(String(x.payment_transaction_id));
+        } catch (e) { l.error = e.message.slice(0, 120); }
+        try {
+          const u = await get(`/users/${encodeURIComponent(b.customer_id)}`);
+          const em = ((u.data || {}).attributes || {}).email;
+          l.emailIsCustomers = !!(x.email && em && String(x.email).toLowerCase() === String(em).toLowerCase());
+        } catch {}
+        links.push(l);
+      }
+      out.appointmentParticipants = {
+        count: parts.length, perBooking: [...new Set(bl.map(b => ((b.metadata && b.metadata.participants) || []).length))],
+        is_guest: pv(x => x.is_guest), payment_method: pv(x => x.payment_method),
+        payment_method_name: pv(x => x.payment_method_name),
+        types: parts[0] ? Object.fromEntries(Object.entries(parts[0].x).map(([k, v]) => [k, typ(v)])) : null,
+        defer_payment: [...new Set(bl.map(b => b.metadata && b.metadata.defer_payment))],
+        broker_id: [...new Set(bl.map(b => typ(b.metadata && b.metadata.broker_id)))],
+        links,
+      };
     } catch (e) { out.appointmentFormats = { error: e.message }; }
     out.appointmentTries.bookingsFound = (() => { const h = firstHit(out.appointmentTries.bookings); return h && h.count ? h.item : null; })();
     // Common sub-paths, in case the directory doesn't name them.

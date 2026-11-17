@@ -1586,7 +1586,8 @@ function bookDialog() {
   const d = members.priv;
   const clients = (d.clients || []).filter(c => c.cid);
   const coaches = d.coaches || [];
-  const services = d.services || [];
+  // PRIVATE LESSONS first: it's the usual one, and the first button is the default.
+  const services = [...(d.services || [])].sort((a, b) => (/private/i.test(b.name) - /private/i.test(a.name)));
   let svc = services[0];
   $('#dlg').showModal();
   $('#sheet').innerHTML = `
