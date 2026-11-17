@@ -1586,11 +1586,14 @@ function bookDialog() {
   const d = members.priv;
   const clients = (d.clients || []).filter(c => c.cid);
   const coaches = d.coaches || [];
-  const svc = (d.services || [])[0];
+  const services = d.services || [];
+  let svc = services[0];
   $('#dlg').showModal();
   $('#sheet').innerHTML = `
     <h2>Book a private</h2>
-    <p class="sub">${esc(svc ? svc.name : 'Private lesson')}${svc && svc.duration ? ' · ' + esc(svc.duration) + ' min' : ''}</p>
+    ${services.length > 1 ? `<div class="pick" id="bk-svc">${services.map((x, i) =>
+        `<button data-sid="${esc(x.id)}" aria-pressed="${i === 0}">${esc(x.name)}${x.minutes ? ' · ' + esc(x.minutes) + ' min' : ''}</button>`).join('')}</div>`
+      : `<p class="sub">${esc(svc ? svc.name : 'Private lesson')}${svc && svc.minutes ? ' · ' + esc(svc.minutes) + ' min' : ''}</p>`}
     <div class="pick" id="bk-who" style="flex-direction:column;align-items:stretch;max-height:38vh;overflow:auto">${clients.map(c => {
       const none = c.left === 0;
       return `<button data-cid="${esc(c.cid)}" ${none ? 'disabled' : ''} style="text-align:left">${esc(c.name)}
@@ -1606,6 +1609,11 @@ function bookDialog() {
       <button class="primary" id="bk-go" disabled>Book</button>
     </footer><div class="err" id="bk-err"></div>`;
   let cid = null;
+  if ($('#bk-svc')) $('#bk-svc').onclick = e => {
+    const b = e.target.closest('button[data-sid]'); if (!b) return;
+    svc = services.find(x => String(x.id) === b.dataset.sid) || svc;
+    $('#bk-svc').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
   $('#bk-who').onclick = e => {
     const b = e.target.closest('button[data-cid]'); if (!b || b.disabled) return;
     cid = b.dataset.cid;
@@ -1621,7 +1629,10 @@ function bookDialog() {
     try {
       const r = await fetch('/api/privates/book', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: me.email, cid, date, time, pid, serviceId: svc && svc.id }) });
-      const out = await r.json();
+      const text = await r.text();
+      let out;
+      try { out = JSON.parse(text); }
+      catch { throw new Error(`Server returned ${r.status} (${r.status === 504 || r.status === 502 ? 'timed out or restarted' : 'not JSON'}). Check Mariana Tek before trying again: the booking may have gone through.`); }
       if (!r.ok || out.error) throw new Error(out.error || `Server returned ${r.status}`);
       $('#dlg').close();
       loadPrivates(true);
