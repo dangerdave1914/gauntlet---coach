@@ -1448,8 +1448,9 @@ function sameCoach(a, b) {
   return s.length > 0 && s.every(t => l.includes(t));
 }
 
-/** Private-lesson clients and their pack balances. Coaches see their own
- *  clients; schedulers and confirmers see everyone's. */
+/** Private-lesson clients, upcoming privates and pack balances, from Mariana
+ *  Tek Appointments. Coaches see their own clients and lessons; schedulers
+ *  and confirmers see everyone's. */
 app.get('/api/privates', async (req, res) => {
   try {
     if (!mariana.enabled()) return res.json({ enabled: false });
@@ -1459,22 +1460,27 @@ app.get('/api/privates', async (req, res) => {
     if (!me) return res.status(403).json({ error: 'Register as staff to see private lessons.' });
     const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
     const d = await mariana.privates({ fresh: req.query.fresh === '1', today: gymToday() });
+    const myPid = mariana.coachIdFor(me.name, d.coaches, sameCoach);
     const anyCoachKnown = d.clients.some(c => c.coaches.length);
-    // If Mariana Tek isn't telling us who teaches, filtering would hide
-    // everything — show all and say so instead.
-    const clients = all || !anyCoachKnown ? d.clients
-      : d.clients.filter(c => c.coaches.some(n => sameCoach(n, me.name)));
-    const open = all ? d.open : d.open.filter(o => !o.coach || sameCoach(o.coach, me.name));
-    res.json({ enabled: true, ...d, clients, open, scope: all ? 'all' : anyCoachKnown ? 'mine' : 'all-unknown-coach' });
+    const mine = n => sameCoach(n, me.name);
+    const scoped = !all && anyCoachKnown;
+    res.json({
+      enabled: true, ...d,
+      clients: scoped ? d.clients.filter(c => c.coaches.some(mine)) : d.clients,
+      upcoming: scoped ? d.upcoming.filter(u => u.coaches.some(mine)) : d.upcoming,
+      // Coaches book their own privates; schedulers pick any coach.
+      coaches: all ? d.coaches : d.coaches.filter(c => c.pid === myPid),
+      myPid,
+      scope: all ? 'all' : anyCoachKnown ? 'mine' : 'all-unknown-coach',
+    });
   } catch (e) {
     console.error('privates:', e.message);
     res.status(502).json({ error: e.message });
   }
 });
 
-/** Book a private client into an open private slot. Coaches book into their
- *  own slots; schedulers into anyone's. If Mariana Tek doesn't say who
- *  teaches a slot, any staff member can book it. */
+/** Book a private: client, date, start time, coach. Coaches can only book
+ *  themselves; schedulers can book any coach on the service. */
 app.post('/api/privates/book', async (req, res) => {
   try {
     if (!mariana.enabled()) return res.status(400).json({ error: 'Mariana Tek isn\'t connected.' });
@@ -1483,12 +1489,16 @@ app.post('/api/privates/book', async (req, res) => {
     const me = (cache.staff || []).find(s => s.email === email);
     if (!me) return res.status(403).json({ error: 'Register as staff to book privates.' });
     const all = SCHEDULERS.includes(email) || CONFIRMERS.includes(email);
-    const slot = mariana.slotInfo(req.body.sid);
-    if (slot && slot.coach && !all && !sameCoach(slot.coach, me.name)) {
-      return res.status(403).json({ error: `That slot is ${slot.coach}'s. Book into one of yours.` });
+    const d = await mariana.privates({ today: gymToday() });
+    const myPid = mariana.coachIdFor(me.name, d.coaches, sameCoach);
+    const pid = String(req.body.pid || myPid || '');
+    if (!all && pid !== String(myPid)) {
+      return res.status(403).json({ error: myPid ? 'You can only book your own privates.' :
+        'Your name on the Staff tab doesn\'t match a coach on the private-lesson service in Mariana Tek.' });
     }
-    const r = await mariana.bookPrivate(req.body.sid, req.body.cid);
-    console.log(`private booked: slot ${req.body.sid} by ${me.name}`);
+    if (String(req.body.date || '') < gymToday()) return res.status(400).json({ error: 'That date has passed.' });
+    const r = await mariana.bookPrivate({ cid: req.body.cid, date: req.body.date, time: req.body.time, pid, serviceId: req.body.serviceId });
+    console.log(`private booked ${req.body.date} ${req.body.time} coach ${pid} by ${me.name}`);
     res.json(r);
   } catch (e) {
     console.error('book private:', e.message);

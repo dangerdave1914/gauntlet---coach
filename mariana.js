@@ -447,6 +447,22 @@ async function probe(date) {
         firstFound: (() => { const h = slots[k].find(t => t.count); return h ? { provider: h.provider, item: h.item, meta: h.meta } : null; })(),
       };
     }
+    // Value FORMATS (digits masked) and enum values from bookings — none of
+    // these identify anyone — so booking can be sent in the same shape.
+    try {
+      const bl = listOfAppt(await appt('/appointments/bookings', { start_date: back60Z, end_date: endZ, per_page: 25 }));
+      const mask = v => v == null ? null : String(v).replace(/\d/g, '9');
+      const uniq = f => [...new Set(bl.map(f).filter(x => x != null))].slice(0, 8);
+      out.appointmentFormats = {
+        count: bl.length,
+        status: uniq(b => b.status), recurrence_type: uniq(b => b.recurrence_type), timezone: uniq(b => b.timezone),
+        start_date: uniq(b => mask(b.start_date)), start_time: uniq(b => mask(b.start_time)), end_time: uniq(b => mask(b.end_time)),
+        duration: uniq(b => b.duration), number_of_people: uniq(b => b.number_of_people), is_active: uniq(b => b.is_active),
+        location_id_matches: uniq(b => String(b.location_id) === String(LOCATION)),
+        participantsShape: (() => { const p = bl.find(b => b.metadata && b.metadata.participants); const x = p && p.metadata.participants;
+          return Array.isArray(x) ? (x[0] && typeof x[0] === 'object' ? ['list of', Object.keys(x[0])] : `list(${x.length})`) : x ? typeof x : null; })(),
+      };
+    } catch (e) { out.appointmentFormats = { error: e.message }; }
     out.appointmentTries.bookingsFound = (() => { const h = firstHit(out.appointmentTries.bookings); return h && h.count ? h.item : null; })();
     // Common sub-paths, in case the directory doesn't name them.
     for (const sub of ['/appointments/appointments', '/appointments/bookings', '/appointments/slots', '/appointments/services', '/appointments/availability', '/appointments/sessions']) {
@@ -625,8 +641,8 @@ async function checkIn(rid) {
 /* ------------------------------------------------------------ privates */
 
 /**
- * Private lessons are Mariana Tek class sessions whose name matches
- * PRIVATE_MATCH, paid from a lesson pack (credits). For each client: their
+ * Private lessons are Mariana Tek Appointments under a service whose name
+ * matches PRIVATE_MATCH, paid from a lesson pack (credits). For each client: their
  * recent and upcoming privates, who teaches them, and what's left in the pack.
  * Two lessons left or fewer = time to talk renewal.
  */
@@ -651,7 +667,6 @@ function tokenFor(uid) {
   if (!tokenOf.has(uid)) { const t = crypto.randomBytes(9).toString('base64url'); tokenOf.set(uid, t); tokens.set(t, uid); }
   return tokenOf.get(uid);
 }
-const openSlots = new Map();  // sid -> { coach, date }
 
 /** Lessons left in a client's private packs, or null if Mariana Tek won't say.
  *  Each package keeps its own balance, so live private packages are summed. */
@@ -682,66 +697,205 @@ async function packFor(uid) {
            label: String(live[0].attributes.credit_name || '') };
 }
 
+/* ------------------------------------------------ appointments (privates) */
+
+/**
+ * Privates live in Mariana Tek Appointments, a separate API from classes:
+ * plain objects in `data` (not JSON:API attributes), UTC timestamps for
+ * booking date filters, no page_size, per_page capped at 25. The probe
+ * found Gauntlet's two services, "Personal Training" and "PRIVATE LESSONS";
+ * MT_PRIVATE_MATCH picks which count as privates (default "private").
+ */
+async function appt(path, params = {}, { method = 'GET', body } = {}) {
+  const url = new URL(BASE + path);
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== '') url.searchParams.set(k, v);
+  const res = await fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/vnd.api+json',
+               ...(body ? { 'Content-Type': 'application/vnd.api+json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let json = null; try { json = text ? JSON.parse(text) : null; } catch {}
+  if (!res.ok) {
+    const msg = json && (json.error || (json.errors && (json.errors.detail || (json.errors[0] && (json.errors[0].detail || json.errors[0].title)))));
+    const e = new Error(`Mariana Tek ${res.status} on ${path}${msg ? ': ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)) : ''}`);
+    e.status = res.status; e.body = json;
+    throw e;
+  }
+  return json;
+}
+const listOfAppt = j => Array.isArray(j) ? j : j && Array.isArray(j.data) ? j.data : j && Array.isArray(j.results) ? j.results : [];
+
+async function apptAll(path, params = {}) {
+  const out = [];
+  let page = 1;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const j = await appt(path, { ...params, ...(page > 1 ? { page } : {}) });
+    out.push(...listOfAppt(j));
+    const pg = j && j.meta && j.meta.pagination;
+    if (!pg || !pg.pages || page >= pg.pages) break;
+    page++;
+  }
+  return out;
+}
+
+const utcZ = (iso, hhmmss, offset = '-06:00') =>
+  new Date(`${iso}T${hhmmss}${offset}`).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/** "14:30:00" / "14:30" / "2:30 PM" / ISO -> { date, time label, mins } in gym time. */
+function apptWhen(b) {
+  const sd = String(b.start_date || ''), st = String(b.start_time || '');
+  if (/T\d/.test(st)) return gymClock(st);
+  if (/T\d/.test(sd) && !st) return gymClock(sd);
+  const date = sd.slice(0, 10);
+  const m = st.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)?$/i);
+  if (!m) return { date, time: st, mins: 9999 };
+  let h = Number(m[1]); const mm = Number(m[2]);
+  if (m[3]) { h = h % 12 + (/p/i.test(m[3]) ? 12 : 0); }
+  const label = `${(h % 12) || 12}:${String(mm).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+  return { date, time: label, mins: h * 60 + mm };
+}
+const cancelledBooking = b => b.is_active === false || /cancel|void|delete/i.test(String(b.status || ''));
+
+let svcCache = null;
+async function privateServices() {
+  if (svcCache && Date.now() - svcCache.at < 60 * 60 * 1000) return svcCache.list;
+  const all = listOfAppt(await appt('/appointments/services', { per_page: 25 }));
+  const list = all.filter(x => PRIVATE_MATCH.test(String(x.service_name || x.name || '')) && x.is_active !== false);
+  svcCache = { at: Date.now(), list };
+  return list;
+}
+
+/**
+ * Employee id -> display name. Appointment providers carry only an id, so
+ * names come from the class schedule's employee_public_profiles (each links
+ * to its employee), with /employees/{id} as a fallback.
+ */
+const coachNames = new Map();
+let coachMapAt = 0;
+async function loadCoachNames(today) {
+  if (Date.now() - coachMapAt < 6 * 60 * 60 * 1000) return;
+  try {
+    const { included } = await getAll('/class_sessions', {
+      location: LOCATION, min_date: addDaysIso(today, -30), max_date: addDaysIso(today, 14),
+      page_size: 100, include: 'employee_public_profiles',
+    });
+    for (const p of included || []) {
+      if (p.type !== 'employee_public_profiles') continue;
+      const emp = relId(p, 'employee');
+      const name = first(p.attributes || {}, 'schedule_display_name', 'name');
+      if (emp && name) coachNames.set(String(emp), String(name));
+    }
+    coachMapAt = Date.now();
+  } catch (e) { console.error('coach names:', e.message); }
+}
+async function coachName(id) {
+  id = String(id);
+  if (coachNames.has(id)) return coachNames.get(id);
+  try {
+    const j = await get(`/employees/${encodeURIComponent(id)}`);
+    const a = (j.data && j.data.attributes) || {};
+    const n = first(a, 'full_name', 'display_name', 'name') ||
+      [first(a, 'first_name'), first(a, 'last_name')].filter(Boolean).join(' ');
+    if (n) { coachNames.set(id, n); return n; }
+  } catch {}
+  coachNames.set(id, null);
+  return null;
+}
+
+/** Client display names, from the member record. */
+const clientNames = new Map();
+async function clientName(uid) {
+  uid = String(uid);
+  if (clientNames.has(uid)) return clientNames.get(uid);
+  let name = 'Client';
+  try { const j = await get(`/users/${encodeURIComponent(uid)}`); name = displayName(j.data, null); } catch {}
+  clientNames.set(uid, name);
+  return name;
+}
+
+async function pool(items, fn, n = 4) {
+  const q = [...items];
+  await Promise.all(Array.from({ length: n }, async () => { while (q.length) { const x = q.shift(); await fn(x); } }));
+}
+
+let lastBookings = [];   // kept as a format template for creating bookings
+
 async function privates({ fresh = false, today } = {}) {
   if (!fresh && privCache && Date.now() - privCache.at < PRIV_TTL) return privCache.value;
   today = today || new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const from = addDaysIso(today, -30), to = addDaysIso(today, 14);
+  const from = addDaysIso(today, -30), to = addDaysIso(today, 30);
+  const services = await privateServices();
+  await loadCoachNames(today);
 
-  const sessions = (await sessionsRange(from, to)).filter(s => PRIVATE_MATCH.test(s.name) && !s.cancelled);
-  const clients = new Map();   // uid -> { name, coaches:Set, lessons:[] }
-  const open = [];
-  for (const s of sessions) {
-    let roster; try { roster = await rosterFor(s.id); } catch { continue; }
-    // An open slot: upcoming, and Mariana Tek says there's room (or, when it
-    // doesn't say, nobody's in it yet — a private is one person).
-    const booked = roster.filter(p => p.status !== 'waitlist').length;
-    const room = typeof s.spots === 'number' ? s.spots > 0
-      : typeof s.capacity === 'number' ? booked < s.capacity : booked === 0;
-    if (s.date >= today && room) {
-      open.push({ sid: String(s.id), date: s.date, time: s.time, mins: s.mins, coach: s.instructor, name: s.name });
-      openSlots.set(String(s.id), { coach: s.instructor, date: s.date });
-    }
-    for (const p of roster) {
-      const key = p.uid || 'guest:' + p.name;
-      const c = clients.get(key) || { uid: p.uid, name: p.name, coaches: new Set(), lessons: [] };
-      for (const n of s.instructors) c.coaches.add(n);
-      c.lessons.push({ date: s.date, time: s.time, coach: s.instructor, status: p.status, upcoming: s.date >= today && p.status !== 'in' });
-      clients.set(key, c);
-    }
+  const bookings = [];
+  for (const sv of services) {
+    const list = await apptAll('/appointments/bookings', {
+      start_date: utcZ(from, '00:00:00'), end_date: utcZ(to, '23:59:59'), service_id: sv.id, per_page: 25,
+    });
+    for (const b of list) if (String(b.service_id) === String(sv.id) || b.service_id == null) bookings.push({ ...b, _svc: sv });
+  }
+  lastBookings = bookings.filter(b => !cancelledBooking(b));
+
+  // Names, a few at a time.
+  const uids = [...new Set(bookings.map(b => b.customer_id).filter(Boolean).map(String))];
+  const pids = [...new Set(bookings.flatMap(b => (b.providers || []).map(p => p.id)).concat(
+    services.flatMap(s => (s.providers || []).map(p => p && typeof p === 'object' ? p.id : p))).filter(x => x != null).map(String))];
+  await pool(uids, clientName);
+  await pool(pids, coachName);
+
+  const now = new Date();
+  const nowDate = today, nowMins = (() => { const c = gymClock(now.toISOString()); return c.mins; })();
+  const clients = new Map();
+  const upcomingAll = [];
+  for (const b of bookings) {
+    if (cancelledBooking(b) || !b.customer_id) continue;
+    const w = apptWhen(b);
+    const coaches = (b.providers || []).map(p => coachNames.get(String(p.id))).filter(Boolean);
+    const future = w.date > nowDate || (w.date === nowDate && w.mins >= nowMins);
+    const uid = String(b.customer_id);
+    const c = clients.get(uid) || { uid, name: clientNames.get(uid) || 'Client', coaches: new Set(), lessons: [] };
+    coaches.forEach(n => c.coaches.add(n));
+    c.lessons.push({ date: w.date, time: w.time, mins: w.mins, coach: coaches.join(', ') || null, upcoming: future,
+                     status: String(b.status || '') });
+    clients.set(uid, c);
+    if (future) upcomingAll.push({ date: w.date, time: w.time, mins: w.mins, client: c.name, coach: coaches.join(', ') || null,
+                                   coaches, service: b._svc.service_name });
   }
 
   const list = [...clients.values()];
-  // Pack balances, a few at a time.
-  const queue = list.filter(c => c.uid);
   let packError = null;
-  await Promise.all(Array.from({ length: 4 }, async () => {
-    while (queue.length) {
-      const c = queue.shift();
-      try { c.pack = await packFor(c.uid); } catch (e) { c.pack = null; packError = packError || e.message; }
-    }
-  }));
+  await pool(list, async c => { try { c.pack = await packFor(c.uid); } catch (e) { c.pack = null; packError = packError || e.message; } });
 
   const out = list.map(c => {
-    const upcoming = c.lessons.filter(l => l.upcoming).length;
-    const done = c.lessons.filter(l => l.status === 'in').length;
+    const done = c.lessons.filter(l => !l.upcoming);
+    const next = c.lessons.filter(l => l.upcoming).sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins)[0] || null;
     const left = c.pack ? c.pack.left : null;
-    // Lessons already booked come out of the pack too, so what's really
-    // unclaimed is left minus booked — when Mariana Tek doesn't already
-    // deduct at booking. Shown as-is; the flag uses the raw balance.
     return {
-      cid: c.uid ? tokenFor(c.uid) : null,
-      name: c.name, coaches: [...c.coaches],
-      lastLesson: c.lessons.filter(l => l.status === 'in').map(l => l.date).sort().pop() || null,
-      nextLesson: c.lessons.filter(l => l.upcoming).sort((a, b) => a.date.localeCompare(b.date))[0] || null,
-      upcoming, doneLast30: done,
+      cid: tokenFor(c.uid), name: c.name, coaches: [...c.coaches],
+      lastLesson: done.map(l => l.date).sort().pop() || null,
+      nextLesson: next ? { date: next.date, time: next.time, coach: next.coach } : null,
+      upcoming: c.lessons.filter(l => l.upcoming).length, doneLast30: done.length,
       left, expires: c.pack ? c.pack.expires : null, packLabel: c.pack ? c.pack.label : null,
       renew: left != null && left <= PRIVATE_LOW,
     };
   }).sort((a, b) => (b.renew - a.renew) || ((a.left ?? 99) - (b.left ?? 99)) || a.name.localeCompare(b.name));
 
-  open.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
-  const value = { from, to, low: PRIVATE_LOW, clients: out, open, packError, sessions: sessions.length,
-    packUrl: PACK_URL || null, updatedAt: new Date().toISOString() };
+  // Coaches who can take a private, for the booking form.
+  const svcCoaches = [];
+  for (const sv of services) for (const p of sv.providers || []) {
+    const id = String(p && typeof p === 'object' ? p.id : p);
+    if (!svcCoaches.some(x => x.pid === id)) svcCoaches.push({ pid: id, type: (p && p.type) || 'employee', name: coachNames.get(id) || null, service: sv.id });
+  }
+
+  upcomingAll.sort((a, b) => a.date.localeCompare(b.date) || a.mins - b.mins);
+  const value = {
+    from, to, low: PRIVATE_LOW, clients: out, upcoming: upcomingAll.slice(0, 60), packError,
+    services: services.map(s => ({ id: s.id, name: s.service_name, duration: s.duration })),
+    coaches: svcCoaches, bookings: bookings.length,
+    packUrl: PACK_URL || null, updatedAt: new Date().toISOString(),
+  };
   privCache = { at: Date.now(), value };
   return value;
 }
@@ -749,37 +903,58 @@ async function privates({ fresh = false, today } = {}) {
 /* ---------------------------------------------------- booking a private */
 
 /**
- * Books a private client into an open private slot, paid from their pack.
- * Body shape follows Mariana Tek's documented booking call (JSON:API,
- * reservation_type standard, class_session + user relationships). If
- * Mariana Tek wants the pack named explicitly, its error says so and is
- * passed through word for word.
+ * Creates an appointment booking. Field formats are copied from an existing
+ * booking (date as YYYY-MM-DD or not, time with or without seconds,
+ * timezone, location, recurrence type), because Mariana Tek's appointment
+ * API isn't documented publicly and its own records are the best spec.
+ * Mariana Tek's error text is passed through word for word.
  */
-function slotInfo(sid) { return openSlots.get(String(sid)) || null; }
+function hhmm(t) { const m = String(t).match(/^(\d{1,2}):(\d{2})$/); return m ? [Number(m[1]), Number(m[2])] : null; }
+const pad = n => String(n).padStart(2, '0');
 
-async function bookPrivate(sid, cid) {
-  sid = String(sid || ''); const uid = tokens.get(String(cid || ''));
-  if (!openSlots.has(sid)) throw new Error('That slot isn\'t open anymore. Refresh and pick another.');
+async function bookPrivate({ cid, date, time, pid, serviceId }) {
+  const uid = tokens.get(String(cid || ''));
   if (!uid) throw new Error('Pick a client from the list.');
-  const r = await post('/reservations', { data: {
-    type: 'reservations',
-    attributes: { reservation_type: 'standard' },
-    relationships: {
-      class_session: { data: { type: 'class_sessions', id: sid } },
-      user: { data: { type: 'users', id: uid } },
-    },
-  } });
-  if (!r.ok) {
-    if (r.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have booking permission. Ask integrations@marianatek.com to add it.');
-    const e = r.json && r.json.errors && r.json.errors[0];
-    const msg = e && (e.detail || e.title);
-    throw new Error(`Mariana Tek ${r.status}${msg ? ': ' + msg : ''}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('Pick a date.');
+  const hm = hhmm(time); if (!hm) throw new Error('Pick a start time.');
+  const services = await privateServices();
+  const sv = services.find(s => String(s.id) === String(serviceId)) || services[0];
+  if (!sv) throw new Error('No private-lesson service found in Mariana Tek.');
+  const prov = (sv.providers || []).find(p => String(p && typeof p === 'object' ? p.id : p) === String(pid));
+  if (!prov) throw new Error('That coach isn\'t set up to teach this service in Mariana Tek.');
+
+  const tpl = lastBookings.find(b => String(b.service_id) === String(sv.id)) || lastBookings[0] || {};
+  const dur = Number(sv.duration || tpl.duration || 60);
+  const endMins = hm[0] * 60 + hm[1] + dur;
+  const withSecs = /:\d{2}:\d{2}$/.test(String(tpl.start_time || '')) || !tpl.start_time;
+  const fmtT = (h, m) => `${pad(h)}:${pad(m)}${withSecs ? ':00' : ''}`;
+  const body = {
+    service_id: sv.id,
+    customer_id: String(uid),
+    providers: [{ id: prov.id != null ? prov.id : prov, type: prov.type || 'employee' }],
+    number_of_people: 1,
+    start_date: date, end_date: endMins >= 1440 ? addDaysIso(date, 1) : date,
+    start_time: fmtT(hm[0], hm[1]), end_time: fmtT(Math.floor(endMins / 60) % 24, endMins % 60),
+    duration: dur,
+    timezone: tpl.timezone || TZ,
+    ...(tpl.location_id ? { location_id: tpl.location_id } : (sv.locations && sv.locations[0] ? { location_id: String(sv.locations[0].id || sv.locations[0]) } : { location_id: LOCATION })),
+    ...(tpl.recurrence_type ? { recurrence_type: tpl.recurrence_type } : {}),
+  };
+  let r;
+  try { r = await appt('/appointments/bookings', {}, { method: 'POST', body }); }
+  catch (e) {
+    if (e.status === 403) throw new Error('Mariana Tek refused: the API key doesn\'t have permission to create appointment bookings. Ask integrations@marianatek.com to add it.');
+    throw new Error(e.message.replace(/ on \/appointments\/bookings/, ''));
   }
-  const slot = openSlots.get(sid);
-  if (slot) cache.delete(slot.date);          // that day's roster shows the booking
-  openSlots.delete(sid);
   privCache = null;
-  return { ok: true, reservation: r.json && r.json.data ? String(r.json.data.id) : null };
+  const made = (r && (r.data || r)) || {};
+  return { ok: true, booking: made.id != null ? String(made.id) : null };
 }
 
-module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, slotInfo };
+/** Which Mariana Tek coach (employee id) is this staff member? By name. */
+function coachIdFor(staffName, coaches, same) {
+  const hit = (coaches || []).find(c => c.name && same(c.name, staffName));
+  return hit ? hit.pid : null;
+}
+
+module.exports = { enabled, day, probe, milestones, checkIn, privates, bookPrivate, coachIdFor };

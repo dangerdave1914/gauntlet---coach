@@ -1543,9 +1543,13 @@ function privatesHtml() {
   if (!d) return '<p class="empty">Loading private lessons…</p>';
   if (d.error) return `<p class="empty">${esc(d.error)}</p>`;
   if (!d.enabled) return '<p class="empty">Mariana Tek isn\'t connected yet.</p>';
-  const scope = d.scope === 'mine' ? 'Your private clients'
-    : d.scope === 'all' ? 'All private clients' : 'All private clients (Mariana Tek isn\'t saying who teaches each one)';
+  const scope = d.scope === 'mine' ? 'Your privates'
+    : d.scope === 'all' ? 'All privates' : 'All privates (coach names unavailable)';
   const renew = d.clients.filter(c => c.renew).length;
+
+  const up = (d.upcoming || []).map(u => `<div class="mile"><div><b>${esc(u.client)}</b>
+      <div class="when">${esc(shortDate(u.date))} · ${esc(u.time)}${u.coach && d.scope !== 'mine' ? ' · ' + esc(u.coach) : ''}</div></div></div>`).join('');
+
   const rows = d.clients.map(c => {
     const bal = c.left == null ? '<span class="when">pack: ?</span>'
       : `<span class="m" style="color:${c.renew ? 'var(--warn)' : 'var(--white)'}">${c.left}</span><div class="when">left</div>`;
@@ -1560,35 +1564,43 @@ function privatesHtml() {
     return `<div class="mile"><div><b>${esc(c.name)}</b>${c.renew ? ' <span class="kind repair">Renew</span>' : ''}
         <div class="when">${lines}</div>${link}</div><div style="text-align:right">${bal}</div></div>`;
   }).join('');
-  const slots = (d.open || []).map(o => `<div class="mile"><div><b>${esc(shortDate(o.date))} · ${esc(o.time)}</b>
-      <div class="when">${esc(o.name)}${o.coach ? ' · ' + esc(o.coach) : ''}</div></div>
-      <div class="acts"><button class="take" data-book="${esc(o.sid)}">Book</button></div></div>`).join('');
+
+  const canBook = (d.coaches || []).length && d.clients.some(c => c.cid);
   return `<div class="datenav"><div class="label">${esc(scope)}</div>
       <button id="priv-refresh" aria-label="Refresh">↻</button></div>
     ${renew ? `<p class="empty" style="margin:-4px 0 10px;color:var(--warn);font-style:normal">${renew} client${renew > 1 ? 's' : ''} at ${d.low} lessons or fewer: time to talk renewal.</p>` : ''}
     ${d.packError ? `<p class="empty">Pack balances unavailable: ${esc(d.packError)}</p>` : ''}
-    <h2 class="sec">Open private slots</h2>
-    <div class="miles" style="border-color:var(--line)">${slots || '<p class="empty" style="margin:8px 0">No open private slots in the next 14 days. Add them on the Mariana Tek schedule.</p>'}</div>
+    ${canBook ? `<button id="bk-open" class="primary" style="width:100%;padding:12px;border-radius:10px;border:0;background:var(--blue);color:#fff;font:600 calc(14px * var(--fs)) 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px;cursor:pointer">+ Book a private</button>`
+      : (d.coaches || []).length ? '' : '<p class="empty">Your Staff tab name doesn\'t match a coach on the private-lesson service in Mariana Tek, so booking is off for you.</p>'}
+    <h2 class="sec">Coming up</h2>
+    <div class="miles" style="border-color:var(--line)">${up || '<p class="empty" style="margin:8px 0">No privates booked in the next 30 days.</p>'}</div>
     <h2 class="sec">Clients</h2>
-    <div class="miles" style="border-color:var(--line)">${rows || '<p class="empty" style="margin:8px 0">No private lessons in the last 30 days or next 14.</p>'}</div>
-    <p class="empty">Privates from the last 30 days and next 14, from Mariana Tek.</p>`;
+    <div class="miles" style="border-color:var(--line)">${rows || '<p class="empty" style="margin:8px 0">No privates in the last 30 days or next 30.</p>'}</div>
+    <p class="empty">Privates from Mariana Tek Appointments, last 30 days and next 30.</p>`;
 }
 
-/* Pick a client for an open slot. Clients with no lessons left are shown but
- * can't be picked: the booking would fail at Mariana Tek anyway. */
-function bookDialog(sid) {
-  const d = members.priv, slot = (d.open || []).find(o => o.sid === sid);
-  if (!slot) return;
+/* Book a private: client, date, start time, coach (schedulers pick any
+ * coach; a coach books themselves). Clients with no lessons left are shown
+ * but can't be picked — Mariana Tek would refuse the booking. */
+function bookDialog() {
+  const d = members.priv;
   const clients = (d.clients || []).filter(c => c.cid);
+  const coaches = d.coaches || [];
+  const svc = (d.services || [])[0];
   $('#dlg').showModal();
   $('#sheet').innerHTML = `
     <h2>Book a private</h2>
-    <p class="sub">${esc(shortDate(slot.date))} · ${esc(slot.time)}${slot.coach ? ' · ' + esc(slot.coach) : ''}</p>
-    <div class="pick" id="bk-who" style="flex-direction:column;align-items:stretch">${clients.length ? clients.map(c => {
+    <p class="sub">${esc(svc ? svc.name : 'Private lesson')}${svc && svc.duration ? ' · ' + esc(svc.duration) + ' min' : ''}</p>
+    <div class="pick" id="bk-who" style="flex-direction:column;align-items:stretch;max-height:38vh;overflow:auto">${clients.map(c => {
       const none = c.left === 0;
       return `<button data-cid="${esc(c.cid)}" ${none ? 'disabled' : ''} style="text-align:left">${esc(c.name)}
         <span style="float:right;opacity:.7">${c.left == null ? 'pack ?' : none ? 'no lessons left' : c.left + ' left'}</span></button>`;
-    }).join('') : '<p class="empty">No private clients yet. Clients show up here once they have a private booked in Mariana Tek.</p>'}</div>
+    }).join('')}</div>
+    <input type="date" id="bk-date" value="${TODAY}" min="${TODAY}">
+    <input type="time" id="bk-time" step="900" value="12:00">
+    ${coaches.length > 1 ? `<select id="bk-coach" style="width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--white);margin:6px 0">
+        ${coaches.map(c => `<option value="${esc(c.pid)}" ${c.pid === d.myPid ? 'selected' : ''}>${esc(c.name || 'Coach ' + c.pid)}</option>`).join('')}</select>`
+      : `<p class="sub" style="margin:6px 0">Coach: ${esc((coaches[0] && coaches[0].name) || 'you')}</p>`}
     <footer style="position:static;padding:0;gap:8px;background:none;margin-top:10px">
       <button onclick="dlg.close()">Cancel</button>
       <button class="primary" id="bk-go" disabled>Book</button>
@@ -1601,10 +1613,14 @@ function bookDialog(sid) {
     $('#bk-go').disabled = false;
   };
   $('#bk-go').onclick = async () => {
+    const date = $('#bk-date').value, time = $('#bk-time').value;
+    const pid = $('#bk-coach') ? $('#bk-coach').value : (coaches[0] && coaches[0].pid);
+    const cname = clients.find(c => c.cid === cid)?.name || 'this client';
+    if (!confirm(`Book ${cname} on ${shortDate(date)} at ${time}?`)) return;
     $('#bk-go').disabled = true; $('#bk-go').textContent = 'Booking…'; $('#bk-err').textContent = '';
     try {
       const r = await fetch('/api/privates/book', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: me.email, sid, cid }) });
+        body: JSON.stringify({ email: me.email, cid, date, time, pid, serviceId: svc && svc.id }) });
       const out = await r.json();
       if (!r.ok || out.error) throw new Error(out.error || `Server returned ${r.status}`);
       $('#dlg').close();
@@ -1626,8 +1642,7 @@ $('#pane-members').addEventListener('click', async e => {
   }
   if (e.target.closest('#mem-refresh')) return loadMembers(true);
   if (e.target.closest('#priv-refresh')) return loadPrivates(true);
-  const bk = e.target.closest('button[data-book]');
-  if (bk) return bookDialog(bk.dataset.book);
+  if (e.target.closest('#bk-open')) return bookDialog();
   const pl = e.target.closest('button[data-packlink]');
   if (pl) {
     const url = members.priv.packUrl;
